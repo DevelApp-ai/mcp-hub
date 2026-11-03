@@ -27,7 +27,13 @@ import { canonicalResourceUrl, resourceUrlForRoute } from './auth/resource.js';
 import { ClientRequestGate } from './limits.js';
 import { runStdio } from './stdio.js';
 import { isMainModule } from './main-module.js';
-import { IDLE_TIMEOUT_MS } from './timings.js';
+import { CONFIG_POLL_INTERVAL_MS, IDLE_TIMEOUT_MS, UNLOCK_SWEEP_INTERVAL_MS } from './timings.js';
+import { UnlockSweep } from './unlock/sweep.js';
+import { UnlockGate } from './unlock/gate.js';
+import { createUnlockRoutes } from './unlock/routes.js';
+import { describeLock } from './unlock/policy.js';
+import { UnlockRuntime } from './unlock/runtime.js';
+import type { HubConfig } from './config.js';
 
 export interface HubOptions {
   externalUrl: string;
@@ -100,7 +106,8 @@ export async function createHub(options: HubOptions) {
   // Bound tokens are the default: an unbound token reaches every MCP path, so
   // the safe behaviour must be the one you get without asking for it.
   const requireResource = options.requireResourceBoundTokens ?? true;
-  const config = loadConfig(options.configPath);
+  const parseOptions = { warn: (message: string) => console.warn(message) };
+  const config = loadConfig(options.configPath, process.env, parseOptions);
   warnMutableDockerImages(config);
   warnSingleFileMount(options.configPath, 'mcp-hub');
   if (options.defaultResource !== undefined) {
@@ -151,7 +158,19 @@ export async function createHub(options: HubOptions) {
   // open subscription streams. /hub carries tools and nothing else, so the only
   // change worth relaying is a child's tool list moving; the supervisor
   // publishes those here.
-  const hubRoute = createRoute(era => buildHubServer(supervisor, store.cookieSecret, era).server, {
+  const unlockRuntime = new UnlockRuntime();
+  const unlockSweep = new UnlockSweep({ store, server: name => supervisor.get(name), intervalMs: UNLOCK_SWEEP_INTERVAL_MS });
+  const unlockGate = new UnlockGate({
+    store,
+    runtime: unlockRuntime,
+    externalUrl,
+    canUnlock: () => factors.enabled,
+    secret: store.cookieSecret,
+    clientName: clientId => store.getApproval(clientId)?.clientName,
+    poke: () => unlockSweep.poke()
+  });
+  announceLocks(config);
+  const hubRoute = createRoute(era => buildHubServer(supervisor, store.cookieSecret, era, unlockGate).server, {
     label: '/hub',
     // Every child, because the aggregate's tool list spans all of them.
     onDemandChange: () => supervisor.reconcileAll()
@@ -163,13 +182,16 @@ export async function createHub(options: HubOptions) {
     .reapOrphans()
     .catch(error => console.error(`mcp-hub: could not reap sandbox containers: ${(error as Error).message}`));
 
-  const watcher = new ConfigWatcher(options.configPath, config);
+  const watcher = new ConfigWatcher(options.configPath, config, process.env, CONFIG_POLL_INTERVAL_MS, parseOptions);
   watcher.on('change', (next, diff) => {
     warnMutableDockerImages(next);
-    console.log(`mcp-hub: config changed (added: ${diff.added.join(',') || '-'} removed: ${diff.removed.join(',') || '-'} changed: ${diff.changed.join(',') || '-'})`);
+    announceLocks(next);
+    console.log(`mcp-hub: config changed (added: ${diff.added.join(',') || '-'} removed: ${diff.removed.join(',') || '-'} changed: ${diff.changed.join(',') || '-'}${diff.retuned ? ` unlock settings: ${diff.retuned.join(',')}` : ''})`);
     void supervisor.applyDiff(next, diff);
   });
-  watcher.on('error', error => console.error(`mcp-hub: ignoring broken config update: ${(error as Error).message}`));
+  watcher.on('error', error =>
+    console.error(`mcp-hub: ignoring broken config update, the previous configuration and its unlock settings stay in force: ${(error as Error).message}`)
+  );
   watcher.start();
 
   // Both mechanisms are on by default: CIMD is what the MCP specification now
@@ -259,6 +281,19 @@ export async function createHub(options: HubOptions) {
   // after the auth routes so it inherits nothing from them but sits ahead of
   // the /:name catch-all.
   app.use(createUpstreamRoutes({ store, registry: upstreamAuth, supervisor, watcher, externalUrl, sessionScope: factors.requiresCode ? 'totp' : '' }));
+  // The pages that unlock a locked server, ahead of the /:name catch-all.
+  app.use(
+    '/unlock',
+    createUnlockRoutes({
+      gate: unlockGate,
+      store,
+      factors,
+      secret: store.cookieSecret,
+      policyFor: server => watcher.current.get(server)?.unlock,
+      lockedServers: () => [...watcher.current].filter(([, server]) => server.unlock).map(([name]) => name),
+      poke: () => unlockSweep.poke()
+    })
+  );
 
   // Registrations age out on a clock, not on traffic, so this cannot wait for
   // the next write to state.json — an idle hub would never clean up at all.
@@ -277,8 +312,10 @@ export async function createHub(options: HubOptions) {
   sweepClients();
   const pruneTimer = setInterval(sweepClients, CLIENT_PRUNE_INTERVAL_MS);
   pruneTimer.unref(); // never a reason to keep the process alive
+  unlockSweep.start();
   const stopMaintenance = () => {
     clearInterval(pruneTimer);
+    unlockSweep.stop();
     // The aggregate's handler holds whatever listen streams are open on /hub;
     // nothing else closes it, because it is not owned by a ManagedServer.
     void hubRoute.close().catch(() => {});
@@ -343,7 +380,7 @@ export async function createHub(options: HubOptions) {
       next(); // fall through to 404
       return;
     }
-    await serverRequestHandler(managed, store.cookieSecret)(req, res);
+    await serverRequestHandler(managed, store.cookieSecret, unlockGate)(req, res);
   };
 
   for (const route of ['/:name', '/:name/mcp']) {
@@ -372,7 +409,12 @@ export async function createHub(options: HubOptions) {
     res.status(500).json({ jsonrpc: '2.0', error: { code: -32603, message: 'Internal error' }, id: null });
   });
 
-  return { app, supervisor, watcher, verifier, store, upstreamAuth, stopMaintenance };
+  return { app, supervisor, watcher, verifier, store, upstreamAuth, stopMaintenance, unlockGate, unlockRuntime, unlockSweep };
+}
+
+function announceLocks(config: HubConfig): void {
+  const locked = [...config].filter(([, server]) => server.unlock).map(([name, server]) => `${name} (${describeLock(server.unlock!)})`);
+  if (locked.length > 0) console.log(`mcp-hub: locked until unlocked: ${locked.join('; ')}`);
 }
 
 function announceTwoFactorMode(factors: OperatorFactors, previous: TwoFactorMode | undefined): void {

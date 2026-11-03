@@ -5,6 +5,8 @@ import path from 'node:path';
 import type { ToolFilterConfig } from './tool-filter.js';
 import type { PassthroughConfig } from './elicitation.js';
 import type { SubscriptionsConfig } from './subscriptions.js';
+import { UNLOCK_MAX_MINUTES } from './unlock/policy.js';
+import type { UnlockConfig } from './unlock/policy.js';
 import { CONFIG_POLL_INTERVAL_MS } from './timings.js';
 
 /**
@@ -18,7 +20,7 @@ import { CONFIG_POLL_INTERVAL_MS } from './timings.js';
  * local server from on-demand lifecycling) and `idleMinutes` (per-server
  * override of the global idle timeout).
  */
-export interface StdioServerConfig extends ToolFilterConfig, PassthroughConfig, SubscriptionsConfig {
+export interface StdioServerConfig extends ToolFilterConfig, PassthroughConfig, SubscriptionsConfig, UnlockConfig {
   kind: 'stdio';
   command: string;
   args: string[];
@@ -62,7 +64,7 @@ export const OAUTH_MODES = new Set(['static', 'dcr', 'cimd']);
 export const OAUTH_GRANTS = new Set(['authorization_code', 'client_credentials']);
 export const OAUTH_CLIENT_AUTH = new Set(['client_secret_basic', 'client_secret_post', 'private_key_jwt']);
 
-export interface RemoteServerConfig extends ToolFilterConfig, PassthroughConfig, SubscriptionsConfig {
+export interface RemoteServerConfig extends ToolFilterConfig, PassthroughConfig, SubscriptionsConfig, UnlockConfig {
   kind: 'remote';
   transport: 'http' | 'sse';
   url: string;
@@ -85,7 +87,7 @@ export interface RemoteServerConfig extends ToolFilterConfig, PassthroughConfig,
  * (the hub supervises). A knob that can only weaken the sandbox is a knob the
  * policy would have to defend.
  */
-export interface DockerServerConfig extends ToolFilterConfig, PassthroughConfig, SubscriptionsConfig {
+export interface DockerServerConfig extends ToolFilterConfig, PassthroughConfig, SubscriptionsConfig, UnlockConfig {
   kind: 'docker';
   image: string;
   /** `never` (default) fails when the image is absent; `missing` lets the hub pull it. */
@@ -126,7 +128,7 @@ export interface DockerServerConfig extends ToolFilterConfig, PassthroughConfig,
  * started by whoever owns the Compose file, and the hub needs no Docker access
  * at all. A Unix socket in a shared volume even works with `network_mode: none`.
  */
-export interface SocketServerConfig extends ToolFilterConfig, PassthroughConfig, SubscriptionsConfig {
+export interface SocketServerConfig extends ToolFilterConfig, PassthroughConfig, SubscriptionsConfig, UnlockConfig {
   kind: 'socket';
   transport: 'unix' | 'tcp';
   socketPath?: string;
@@ -163,7 +165,9 @@ const RESERVED_NAMES = new Set([
   'userinfo',
   // The upstream OAuth callback lives under /upstream/…; a server of that name
   // would be reachable at /upstream and is too close for comfort.
-  'upstream'
+  'upstream',
+  // The pages that unlock a locked server.
+  'unlock'
 ]);
 const REMOTE_TYPES = new Set(['http', 'sse', 'streamable-http', 'streamable_http']);
 const SECRETS_NAME_PATTERN = /^[a-zA-Z0-9_-]+$/;
@@ -197,6 +201,45 @@ export function expandEnvVars(value: string, env: NodeJS.ProcessEnv = process.en
  */
 export interface ParseOptions {
   expand?: boolean;
+  /** Receives a line about keys a server entry carries that the hub ignores. */
+  warn?: (message: string) => void;
+}
+
+const COMMON_KEYS = ['type', 'hub', 'allowTools', 'denyTools', 'passthrough', 'subscriptions', 'unlock'];
+const LIFECYCLE_KEYS = ['keepAlive', 'idleMinutes'];
+const KNOWN_KEYS: Record<ServerConfig['kind'], ReadonlySet<string>> = {
+  stdio: new Set([...COMMON_KEYS, ...LIFECYCLE_KEYS, 'command', 'args', 'env']),
+  remote: new Set([...COMMON_KEYS, 'url', 'headers', 'oauth']),
+  docker: new Set([
+    ...COMMON_KEYS,
+    ...LIFECYCLE_KEYS,
+    'image',
+    'pull',
+    'command',
+    'entrypoint',
+    'env',
+    'secretsFrom',
+    'volumes',
+    'ports',
+    'network',
+    'memory',
+    'pidsLimit',
+    'cpus',
+    'readOnly',
+    'tmpfs',
+    'user'
+  ]),
+  socket: new Set([...COMMON_KEYS, 'socket', 'host', 'port'])
+};
+
+/** Names keys the hub ignores, since a typo reads as an absent setting. */
+function warnUnknownKeys(name: string, entry: Record<string, unknown>, parsed: ServerConfig, options: ParseOptions | undefined): void {
+  if (!options?.warn) return;
+  const unknown = Object.keys(entry).filter(key => !KNOWN_KEYS[parsed.kind].has(key));
+  if (unknown.length === 0) return;
+  options.warn(
+    `mcp-hub: server "${name}" has ${unknown.length === 1 ? 'a key' : 'keys'} the hub ignores: ${unknown.map(key => JSON.stringify(key)).join(', ')} — check for a typo`
+  );
 }
 
 type ExpandFn = (value: string) => string;
@@ -357,21 +400,24 @@ function parseToolFilter(name: string, entry: Record<string, unknown>): ToolFilt
   const result: ToolFilterConfig = {};
   for (const field of ['allowTools', 'denyTools'] as const) {
     if (entry[field] === undefined) continue;
-    const patterns = requireStringArray(name, field, entry[field]);
-    for (const pattern of patterns) {
-      if (pattern.length === 0) {
-        throw new ConfigError(`Server "${name}": "${field}" must not contain an empty string`);
-      }
-      const star = pattern.indexOf('*');
-      if (star !== -1 && star !== pattern.length - 1) {
-        throw new ConfigError(
-          `Server "${name}": "${field}" entry "${pattern}" — only a trailing "*" is supported (e.g. "list_*"); other entries are exact tool names`
-        );
-      }
-    }
-    result[field] = patterns;
+    result[field] = validatePatterns(name, field, requireStringArray(name, field, entry[field]));
   }
   return result;
+}
+
+function validatePatterns(name: string, field: string, patterns: string[]): string[] {
+  for (const pattern of patterns) {
+    if (pattern.length === 0) {
+      throw new ConfigError(`Server "${name}": "${field}" must not contain an empty string`);
+    }
+    const star = pattern.indexOf('*');
+    if (star !== -1 && star !== pattern.length - 1) {
+      throw new ConfigError(
+        `Server "${name}": "${field}" entry "${pattern}" — only a trailing "*" is supported (e.g. "list_*"); other entries are exact tool names`
+      );
+    }
+  }
+  return patterns;
 }
 
 /**
@@ -415,6 +461,30 @@ function parseSubscriptions(name: string, entry: Record<string, unknown>): Subsc
     throw new ConfigError(`Server "${name}": "subscriptions" must be "auto" or "off"`);
   }
   return { subscriptions: entry.subscriptions };
+}
+
+/** `unlock`, parsed strictly so a typo cannot leave a lock off. */
+function parseUnlock(name: string, entry: Record<string, unknown>): UnlockConfig {
+  const value = entry.unlock;
+  if (value === undefined || value === false) return {};
+  if (value === true) return { unlock: { tools: ['*'], maxMinutes: UNLOCK_MAX_MINUTES } };
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new ConfigError(`Server "${name}": "unlock" must be true, false or an object with "tools" and "maxMinutes"`);
+  }
+  const fields = value as Record<string, unknown>;
+  const unknown = Object.keys(fields).filter(key => key !== 'tools' && key !== 'maxMinutes');
+  if (unknown.length > 0) {
+    throw new ConfigError(`Server "${name}": unknown "unlock" field(s) ${unknown.map(key => JSON.stringify(key)).join(', ')} (supported: tools, maxMinutes)`);
+  }
+  const tools = fields.tools === undefined ? ['*'] : validatePatterns(name, 'unlock.tools', requireStringArray(name, 'unlock.tools', fields.tools));
+  if (tools.length === 0) {
+    throw new ConfigError(`Server "${name}": "unlock.tools" must name at least one tool, or "*" for all of them`);
+  }
+  const maxMinutes = fields.maxMinutes ?? UNLOCK_MAX_MINUTES;
+  if (!Number.isSafeInteger(maxMinutes) || (maxMinutes as number) < 0 || (maxMinutes as number) > UNLOCK_MAX_MINUTES) {
+    throw new ConfigError(`Server "${name}": "unlock.maxMinutes" must be a whole number from 0 (only single calls) to ${UNLOCK_MAX_MINUTES}`);
+  }
+  return { unlock: { tools, maxMinutes: maxMinutes as number } };
 }
 
 function rejectLifecycle(name: string, entry: Record<string, unknown>, kind: string): void {
@@ -546,7 +616,7 @@ function parseSocketServer(name: string, entry: Record<string, unknown>, type: '
 function parseServer(name: string, entry: Record<string, unknown>, env: NodeJS.ProcessEnv, options?: ParseOptions): ServerConfig {
   const expand = expanderFor(env, options);
   const hub = entry.hub !== false;
-  const toolFilter = { ...parseToolFilter(name, entry), ...parsePassthrough(name, entry), ...parseSubscriptions(name, entry) };
+  const toolFilter = { ...parseToolFilter(name, entry), ...parsePassthrough(name, entry), ...parseSubscriptions(name, entry), ...parseUnlock(name, entry) };
   if (entry.hub !== undefined && typeof entry.hub !== 'boolean') {
     throw new ConfigError(`Server "${name}": "hub" must be a boolean`);
   }
@@ -633,7 +703,9 @@ export function parseConfig(json: string, env: NodeJS.ProcessEnv = process.env, 
     if (typeof entry !== 'object' || entry === null) {
       throw new ConfigError(`Server "${name}" must be an object`);
     }
-    result.set(name, parseServer(name, entry, env, options));
+    const parsed = parseServer(name, entry, env, options);
+    warnUnknownKeys(name, entry, parsed, options);
+    result.set(name, parsed);
   }
   return result;
 }
@@ -656,16 +728,27 @@ export interface ConfigDiff {
   added: string[];
   removed: string[];
   changed: string[];
+  /** Servers where only `unlock` changed; applied without a restart. */
+  retuned?: string[];
+}
+
+/** Only the presence of `unlock` restarts a child, not its contents. */
+export function restartFingerprint(config: ServerConfig): string {
+  return JSON.stringify(config.unlock === undefined ? config : { ...config, unlock: true });
 }
 
 export function diffConfigs(before: HubConfig, after: HubConfig): ConfigDiff {
   const added = [...after.keys()].filter(name => !before.has(name));
   const removed = [...before.keys()].filter(name => !after.has(name));
-  const changed = [...after.keys()].filter(name => {
-    const a = before.get(name);
-    return a !== undefined && JSON.stringify(a) !== JSON.stringify(after.get(name));
-  });
-  return { added, removed, changed };
+  const changed: string[] = [];
+  const retuned: string[] = [];
+  for (const [name, next] of after) {
+    const previous = before.get(name);
+    if (previous === undefined) continue;
+    if (restartFingerprint(previous) !== restartFingerprint(next)) changed.push(name);
+    else if (JSON.stringify(previous) !== JSON.stringify(next)) retuned.push(name);
+  }
+  return { added, removed, changed, ...(retuned.length > 0 ? { retuned } : {}) };
 }
 
 /**
@@ -720,7 +803,7 @@ export class ConfigWatcher extends EventEmitter {
       return;
     }
     const diff = diffConfigs(this.current, next);
-    if (diff.added.length === 0 && diff.removed.length === 0 && diff.changed.length === 0) return;
+    if (diff.added.length === 0 && diff.removed.length === 0 && diff.changed.length === 0 && !diff.retuned) return;
     this.current = next;
     this.emit('change', next, diff);
   }

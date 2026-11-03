@@ -7,7 +7,10 @@ import { forwardToolCall } from './forward.js';
 import { loggableToolName, toolAllowed } from './tool-filter.js';
 import { booleanEnv } from './mcp-limits.js';
 import { REFUSAL_REASON, decidePassthrough } from './elicitation.js';
-import { REVISION, type Era } from './proxy.js';
+import { REVISION, unknownToLockedServer, type Era } from './proxy.js';
+import { callerOf } from './unlock/gate.js';
+import type { UnlockGate } from './unlock/gate.js';
+import { locksTool, locksWholeServer } from './unlock/policy.js';
 import { MAX_CHILD_DESCRIPTION_CHARS, MAX_CHILD_ERROR_CHARS, MAX_CHILD_TITLE_CHARS, childText } from './child-text.js';
 
 /**
@@ -77,10 +80,25 @@ const listServersOutput = z.object({
       hidden: z
         .literal(true)
         .optional()
-        .describe('Present only for a server whose tools are served by its own endpoint alone.')
+        .describe('Present only for a server whose tools are served by its own endpoint alone.'),
+      locked: z.boolean().optional().describe('Present for a server with locked tools: whether they are locked for you right now.'),
+      lockedTools: z.array(z.string()).optional().describe('The locked tools, as name patterns; absent when every tool is locked.'),
+      unlockedUntil: z.string().optional().describe('When your unlock ends, if you hold one (ISO 8601).')
     })
   )
 });
+
+const unlockStatusOutput = z.object({
+  server: z.string(),
+  status: z.enum(['unlocked', 'pending', 'denied']).describe('unlocked: you may call its tools; pending: give the user the url; denied: do not ask again yet.'),
+  url: z.string().optional().describe('The page the user opens to unlock; never open it yourself.'),
+  code: z.string().optional().describe('The matching code the page shows.'),
+  expiresAt: z.string().optional().describe('When the link stops working (ISO 8601).'),
+  unlockedUntil: z.string().optional().describe('When the unlock ends (ISO 8601).'),
+  message: z.string()
+});
+
+const lockServerOutput = z.object({ server: z.string(), locked: z.literal(true), ended: z.number().int().describe('How many of your unlocks were ended.') });
 
 const listToolsOutput = z.object({
   server: z.string(),
@@ -221,7 +239,7 @@ const requireExposed = (managed: ManagedServer): CallToolResult | undefined => {
  * ever run) blocks on the start — there is nothing truthful to answer from.
  * Always-running servers pass through untouched.
  */
-const prepare = async (managed: ManagedServer): Promise<CallToolResult | undefined> => {
+const prepare = async (managed: ManagedServer, warm = true): Promise<CallToolResult | undefined> => {
   if (!managed.onDemand) return undefined;
   if (!managed.hasSnapshot) {
     try {
@@ -229,7 +247,7 @@ const prepare = async (managed: ManagedServer): Promise<CallToolResult | undefin
     } catch (error) {
       return toolError(`Server "${managed.name}" failed to start: ${reason(error)}`);
     }
-  } else if (managed.state === 'sleeping') {
+  } else if (managed.state === 'sleeping' && warm) {
     void managed.wake().catch(() => {});
   }
   return undefined;
@@ -244,8 +262,21 @@ const prepare = async (managed: ManagedServer): Promise<CallToolResult | undefin
  * only thing that varies here is `describe_connection`, which would otherwise
  * have to guess the one fact it exists to report.
  */
-export function buildHubServer(supervisor: Supervisor, secret: string, era: Era): McpServer {
+export function buildHubServer(supervisor: Supervisor, secret: string, era: Era, gate?: UnlockGate): McpServer {
   const hub = new McpServer({ name: 'mcp-hub', version: VERSION });
+  // Without a gate (stdio) nothing can unlock, so a whole-locked server stays shut.
+  const shutFor = (managed: ManagedServer, ctx: Parameters<typeof callerOf>[0]): boolean =>
+    locksWholeServer(managed.config.unlock) && !(gate?.openForEverything(managed, callerOf(ctx)) ?? false);
+  const lockStatus = (managed: ManagedServer, ctx: Parameters<typeof callerOf>[0]) => {
+    const policy = managed.config.unlock;
+    if (!policy) return {};
+    const window = gate?.windowFor(managed.name, callerOf(ctx));
+    return {
+      locked: window === undefined,
+      ...(locksWholeServer(policy) ? {} : { lockedTools: policy.tools }),
+      ...(window ? { unlockedUntil: new Date(window.expiresAt).toISOString() } : {})
+    };
+  };
 
   const findServer = (name: string) => supervisor.get(name);
 
@@ -260,7 +291,7 @@ export function buildHubServer(supervisor: Supervisor, secret: string, era: Era)
       outputSchema: listServersOutput,
       annotations: READS
     },
-    async () =>
+    async (_args, ctx) =>
       structured({
         servers: [...supervisor.servers.values()].map(s => ({
           name: s.name,
@@ -269,7 +300,8 @@ export function buildHubServer(supervisor: Supervisor, secret: string, era: Era)
           description: childText((s.serverInfo as { title?: string } | undefined)?.title ?? s.serverInfo?.name, MAX_CHILD_TITLE_CHARS),
           status: s.state,
           toolCount: s.tools.length,
-          ...(s.config.hub ? {} : { hidden: true as const })
+          ...(s.config.hub ? {} : { hidden: true as const }),
+          ...lockStatus(s, ctx)
         }))
       })
   );
@@ -283,13 +315,13 @@ export function buildHubServer(supervisor: Supervisor, secret: string, era: Era)
       outputSchema: listToolsOutput,
       annotations: READS
     },
-    async ({ server }) => {
+    async ({ server }, ctx) => {
       const managed = findServer(server);
       if (!managed) return toolError(`Unknown server "${server}". Use list_servers to see available servers.`);
       const hidden = requireExposed(managed);
       if (hidden) return hidden;
       if (!managed.onDemand && managed.state !== 'up') return toolError(`Server "${server}" is ${managed.state}.`);
-      const failed = await prepare(managed);
+      const failed = await prepare(managed, !shutFor(managed, ctx));
       if (failed) return failed;
       return structured({
         server: managed.name,
@@ -322,7 +354,7 @@ export function buildHubServer(supervisor: Supervisor, secret: string, era: Era)
       outputSchema: getToolSchemaOutput,
       annotations: READS
     },
-    async ({ server, tool }) => {
+    async ({ server, tool }, ctx) => {
       const managed = findServer(server);
       if (!managed) return toolError(`Unknown server "${server}". Use list_servers to see available servers.`);
       const hidden = requireExposed(managed);
@@ -332,7 +364,7 @@ export function buildHubServer(supervisor: Supervisor, secret: string, era: Era)
       // would fail anyway.
       const filtered = requireAllowedTool(managed, tool, server);
       if (filtered) return filtered;
-      const failed = await prepare(managed);
+      const failed = await prepare(managed, !shutFor(managed, ctx));
       if (failed) return failed;
       const found = managed.tools.find(t => t.name === tool);
       if (!found) return toolError(`Unknown tool "${tool}" on server "${server}". Use list_tools to see available tools.`);
@@ -392,6 +424,14 @@ export function buildHubServer(supervisor: Supervisor, secret: string, era: Era)
       // start a sleeping server.
       const filtered = requireAllowedTool(managed, tool, server);
       if (filtered) return filtered;
+      if (unknownToLockedServer(managed, tool)) return toolError(`Unknown tool "${tool}" on server "${server}". Use list_tools to see available tools.`);
+      let admitted = false;
+      if (locksTool(managed.config.unlock, tool)) {
+        if (!gate) return toolError(`Server "${server}" is locked, and a hub running over stdio cannot unlock it.`);
+        const verdict = gate.checkToolCall({ managed, ctx, via: 'hub', door: '/hub', tool, args });
+        if (!verdict.admit) return verdict.answer;
+        admitted = true;
+      }
       // The wake stays here rather than being left to the forward, which would
       // do it too: this endpoint answers with tool results, and "failed to
       // start" is a different thing for a caller to read than "tool call
@@ -416,7 +456,8 @@ export function buildHubServer(supervisor: Supervisor, secret: string, era: Era)
           params: { name: tool, arguments: (args ?? {}) as Record<string, unknown> },
           ctx,
           secret,
-          via: 'hub'
+          via: 'hub',
+          admitted
         });
       } catch (error) {
         // Aggregate semantics: every failure here is a tool result, never a
@@ -436,10 +477,11 @@ export function buildHubServer(supervisor: Supervisor, secret: string, era: Era)
       outputSchema: wakeServerOutput,
       annotations: LIFECYCLE
     },
-    async ({ server }) => {
+    async ({ server }, ctx) => {
       const managed = findServer(server);
       if (!managed) return toolError(`Unknown server "${server}". Use list_servers to see available servers.`);
       if (!managed.onDemand) return toolError(`Server "${server}" is always running.`);
+      if (shutFor(managed, ctx)) return toolError(`Server "${server}" is locked. Call one of its tools to get an unlock link for the user.`);
       try {
         await managed.wake();
       } catch (error) {
@@ -482,6 +524,59 @@ export function buildHubServer(supervisor: Supervisor, secret: string, era: Era)
    * Read here rather than at module load so a test can set it per case, and
    * because this function runs once per request anyway.
    */
+  // Only on a hub that locks something, and only where something can unlock it.
+  if (gate && [...supervisor.servers.values()].some(s => s.config.unlock)) {
+    hub.registerTool(
+      'request_unlock',
+      {
+        title: 'Ask the user to unlock a server',
+        description:
+          'Get a link the user opens to unlock a locked server for you, before you call its tools. Give the user the url; never open it yourself. ' +
+          'list_servers shows which servers are locked.',
+        inputSchema: z.object({ server: z.string().describe('Server name from list_servers') }),
+        outputSchema: unlockStatusOutput,
+        annotations: LIFECYCLE
+      },
+      async ({ server }, ctx) => {
+        const managed = findServer(server);
+        if (!managed) return toolError(`Unknown server "${server}". Use list_servers to see available servers.`);
+        if (!managed.config.unlock) return structured({ server, status: 'unlocked', message: `Server "${server}" is not locked.` });
+        const window = gate.windowFor(server, callerOf(ctx));
+        if (window) return structured({ server, status: 'unlocked', unlockedUntil: new Date(window.expiresAt).toISOString(), message: `Server "${server}" is unlocked for you.` });
+        if (!managed.config.hub) {
+          return toolError(`Server "${server}" is only reachable through its own connector /${server}/mcp. Call one of its tools there to get a link, or ask the user to unlock it at ${gate.overviewLink()}.`);
+        }
+        const asked = gate.requestAhead(managed, ctx);
+        return structured({
+          server,
+          status: asked.status,
+          ...(asked.status === 'pending' && asked.request
+            ? { url: gate.link(asked.request), code: asked.request.code, expiresAt: new Date(asked.request.expiresAt).toISOString() }
+            : {}),
+          message: asked.message
+        });
+      }
+    );
+
+    hub.registerTool(
+      'lock_server',
+      {
+        title: 'Lock a server again',
+        description: 'End your unlocks of a server now, once you are done with it. It can never unlock anything.',
+        inputSchema: z.object({ server: z.string().describe('Server name from list_servers') }),
+        outputSchema: lockServerOutput,
+        annotations: LIFECYCLE
+      },
+      async ({ server }, ctx) => {
+        const managed = findServer(server);
+        if (!managed) return toolError(`Unknown server "${server}". Use list_servers to see available servers.`);
+        const caller = callerOf(ctx);
+        const ended = caller.clientId ? gate.endUnlocks(server, caller) : 0;
+        return structured({ server, locked: true, ended });
+      }
+    );
+  }
+
   if (booleanEnv('MCP_DIAGNOSTICS', false)) {
     hub.registerTool(
       'describe_connection',

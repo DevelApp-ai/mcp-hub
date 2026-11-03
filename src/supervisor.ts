@@ -26,6 +26,7 @@ import { boundedRedirectFetch } from './upstream/redirects.js';
 import { ToolCache } from './tool-cache.js';
 import type { ToolCacheEntry } from './tool-cache.js';
 import { filterTools, hasToolFilter, unmatchedPatterns } from './tool-filter.js';
+import { unmatchedUnlockPatterns } from './unlock/policy.js';
 import type { RouteChannel, SubscriptionRegistry } from './subscriptions.js';
 import { subscriptionsAllowed } from './subscriptions.js';
 import { logSafe } from './auth/text.js';
@@ -668,6 +669,9 @@ export class ManagedServer {
    * the tool names are known before anything starts.
    */
   private reportToolFilter(upstream: Tool[]): void {
+    for (const pattern of unmatchedUnlockPatterns(this.config.unlock, this.tools)) {
+      console.warn(`[${this.name}] unlock: no tool matches "${pattern}" — a typo here leaves that tool unlocked`);
+    }
     if (!hasToolFilter(this.config)) return;
     this.toolsHidden = upstream.length - this.tools.length;
     this.filterUnmatched = unmatchedPatterns(this.config, upstream);
@@ -840,6 +844,43 @@ export class ManagedServer {
     const channel = this.channel;
     this.channel = undefined;
     await channel?.close().catch(() => {});
+  }
+
+  private inflight = 0;
+  private readonly idleWaiters: Array<() => void> = [];
+
+  /** Counts a forwarded request until it settles. */
+  track<T>(work: Promise<T>): Promise<T> {
+    this.inflight++;
+    return work.finally(() => {
+      this.inflight--;
+      if (this.inflight === 0) for (const wake of this.idleWaiters.splice(0)) wake();
+    });
+  }
+
+  /** Resolves when no tracked request runs, or after `timeoutMs`. */
+  whenIdle(timeoutMs: number): Promise<void> {
+    if (this.inflight === 0) return Promise.resolve();
+    return new Promise(resolve => {
+      const timer = setTimeout(resolve, timeoutMs);
+      timer.unref();
+      this.idleWaiters.push(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+
+  /** Sleeps an on-demand child, restarts an always-on one, leaves remote ones. */
+  async recycle(): Promise<'slept' | 'restarted' | 'kept'> {
+    if (this.config.kind === 'remote' || this.config.kind === 'socket' || this.state !== 'up') return 'kept';
+    if (this.onDemand) {
+      await this.sleep();
+      return 'slept';
+    }
+    await this.shutdown();
+    await this.start();
+    return 'restarted';
   }
 
   /** Same teardown as stop(), but the server stays wakeable. */
@@ -1074,6 +1115,11 @@ export class Supervisor {
 
   async applyDiff(config: HubConfig, diff: ConfigDiff): Promise<void> {
     this.config = config;
+    for (const name of diff.retuned ?? []) {
+      const server = this.servers.get(name);
+      const cfg = config.get(name);
+      if (server && cfg) server.config = cfg;
+    }
     for (const name of [...diff.removed, ...diff.changed]) {
       const server = this.servers.get(name);
       if (server) {
