@@ -21,9 +21,10 @@ export const CALL_TIMEOUT_MS = timerEnv('MCP_CALL_TIMEOUT_MS', DEFAULT_CALL_TIME
 export const RESET_ON_PROGRESS = booleanEnv('MCP_RESET_TIMEOUT_ON_PROGRESS', false);
 export const MAX_CALL_MS = Math.max(timerEnv('MCP_MAX_CALL_MS', DEFAULT_MAX_CALL_MS), CALL_TIMEOUT_MS);
 
-/** `positiveIntegerEnv`, cut to what a timer can wait. */
+/** `positiveIntegerEnv`, cut to what a timer can wait; also past 2^53, where it would fall back. */
 function timerEnv(name: string, fallback: number): number {
-  const value = positiveIntegerEnv(name, fallback);
+  const asked = Number(process.env[name]);
+  const value = Number.isInteger(asked) && asked > MAX_TIMER_MS ? asked : positiveIntegerEnv(name, fallback);
   if (value <= MAX_TIMER_MS) return value;
   console.error(`mcp-hub: ${name} is longer than a timer can wait, using ${MAX_TIMER_MS}`);
   return MAX_TIMER_MS;

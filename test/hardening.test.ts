@@ -1059,6 +1059,49 @@ describe('MCP response and discovery budgets', () => {
     }
   });
 
+  it('cuts a deadline past 2^53 the same way instead of falling back to five minutes', async () => {
+    // Past 2^53 the number is no longer a safe integer, but it still asks for
+    // longer than a timer can wait; the default would be the opposite answer.
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const limits = await limitsWith({ MCP_CALL_TIMEOUT_MS: '99999999999999999999', MCP_MAX_CALL_MS: '1e20' });
+      expect(limits.CALL_TIMEOUT_MS).toBe(limits.MAX_TIMER_MS);
+      expect(limits.MAX_CALL_MS).toBe(limits.MAX_TIMER_MS);
+      expect(errors).toHaveBeenCalledWith(expect.stringContaining('MCP_CALL_TIMEOUT_MS is longer than a timer can wait'));
+      expect(errors).toHaveBeenCalledWith(expect.stringContaining('MCP_MAX_CALL_MS is longer than a timer can wait'));
+      expect(errors).not.toHaveBeenCalledWith(expect.stringContaining('must be a positive integer'));
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('cuts on both sides of 2^53, where the fallback used to begin', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      for (const value of [String(Number.MAX_SAFE_INTEGER), String(2 ** 53)]) {
+        const limits = await limitsWith({ MCP_CALL_TIMEOUT_MS: value });
+        expect(limits.CALL_TIMEOUT_MS).toBe(limits.MAX_TIMER_MS);
+      }
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('still falls back on a deadline that is no integer at all, however large', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const limits = await limitsWith({ MCP_CALL_TIMEOUT_MS: 'Infinity', MCP_MAX_CALL_MS: '-1e20' });
+      expect(limits.CALL_TIMEOUT_MS).toBe(limits.DEFAULT_CALL_TIMEOUT_MS);
+      expect(limits.MAX_CALL_MS).toBe(limits.DEFAULT_MAX_CALL_MS);
+      expect(errors).toHaveBeenCalledWith(expect.stringContaining('MCP_CALL_TIMEOUT_MS must be a positive integer'));
+      expect(errors).toHaveBeenCalledWith(expect.stringContaining('MCP_MAX_CALL_MS must be a positive integer'));
+      const fraction = await limitsWith({ MCP_CALL_TIMEOUT_MS: '3000000000.5' });
+      expect(fraction.CALL_TIMEOUT_MS).toBe(fraction.DEFAULT_CALL_TIMEOUT_MS);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
   it('never lets the cap undercut the deadline it bounds', async () => {
     const limits = await limitsWith({ MCP_CALL_TIMEOUT_MS: '600000', MCP_MAX_CALL_MS: '60000' });
     expect(limits.MAX_CALL_MS).toBe(600_000);

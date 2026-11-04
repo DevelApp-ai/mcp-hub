@@ -57,7 +57,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clock.
 - A timeout above `2147483647` ms — `MCP_CALL_TIMEOUT_MS` with one zero too
   many — made every call fail after a millisecond. It is now cut to the longest
-  a timer can wait, with a warning.
+  a timer can wait, with a warning, however many digits it has.
 - The docs said `HTTP_REQUEST_TIMEOUT_MS` bounds a tool call. It only bounds
   sending the request; for a silent answer the reverse proxy's read timeout is
   the outer limit.
