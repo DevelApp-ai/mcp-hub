@@ -45,9 +45,10 @@ the hub were asking. That crosses a trust boundary, so four things happen to it
 on the way through, and each is a refusal rather than a repair.
 
 **It is attributed.** The message is prefixed with `Server "<name>" asks:`, and
-the text is stripped of bidirectional overrides, zero-width and control
-characters first — otherwise a child could visually reverse the very line that
-names it.
+the text is stripped of control and format characters and of the Unicode line
+separators first — bidirectional overrides, zero-width and tag characters among
+them; tab, newline and carriage return stay. Otherwise a child could visually reverse the very line that names
+it, or hide text that a model reads and a person never sees.
 
 **Only questions travel.** A child may embed other requests in an
 `input_required`; the hub carries `elicitation/create` and drops the rest. An

@@ -184,13 +184,15 @@ export function openRequestState(token: string, secret: string, expected: StateB
  * Characters that let text lie about its own shape.
  *
  * Bidi overrides can visually reverse the attribution line, so `Server "x"
- * asks:` renders as something else entirely; zero-width characters hide
- * content from a reader that a model still sees; control characters forge
- * lines in anything that logs this. None of them belong in a sentence shown to
- * a person. Newline and tab survive — a prompt may legitimately have them.
+ * asks:` renders as something else entirely; zero-width and tag characters
+ * hide content from a reader that a model still sees; control characters and
+ * the Unicode line separators forge lines in anything that logs this. None of
+ * them belong in a sentence shown to a person. Newline, carriage return and tab
+ * survive — a prompt may legitimately have them. A lone surrogate half goes too,
+ * so removing what sat between two of them cannot join them into a character
+ * the input never had.
  */
-// eslint-disable-next-line no-control-regex -- matching them is the point
-const UNSAFE_TEXT = /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f​-‏‪-‮⁠⁦-⁩﻿]/g;
+const UNSAFE_TEXT = /(?![\t\n\r])[\p{Cc}\p{Cf}\p{Cs}\p{Zl}\p{Zp}]/gu;
 
 export function sanitiseText(text: string): string {
   return text.replace(UNSAFE_TEXT, '');

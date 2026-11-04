@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **Invisible characters no longer travel in a child's text.** What a child
+  writes reaches the person and the model through the hub — elicitation
+  prompts, error messages, titles and descriptions in the hub tools, and now
+  progress messages — and the filter on the way let C1 controls (NEL, the
+  single-byte CSI), U+2028 and U+2029, the Arabic letter mark, the invisible
+  operators and the Unicode tag characters through. Tag characters are an
+  invisible copy of ASCII: a child could hide an instruction in harmless text
+  that a model reads and a person never sees. The filter now removes every
+  control character but tab, newline and carriage return, every format
+  character, both separators and any lone surrogate half, so removing one can
+  no longer join two halves into a character the input never had.
+
 ### Added
 
 - **Progress reaches the client.** A child's `notifications/progress` travels
