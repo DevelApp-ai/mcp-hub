@@ -165,6 +165,17 @@ describe('gate', () => {
   it('lets the first one through at time zero', () => {
     expect(gate(250, () => 0)()).toBe(true);
   });
+
+  it('is not silenced by a clock that steps back', () => {
+    // A wall clock can jump backwards; the gate must not hold everything back until it catches up.
+    let now = 10_000;
+    const passes = gate(250, () => now);
+    expect(passes()).toBe(true);
+    now = 5_000;
+    expect(passes()).toBe(true);
+    now = 5_100;
+    expect(passes()).toBe(false);
+  });
 });
 
 describe('asksForProgress', () => {

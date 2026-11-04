@@ -93,6 +93,24 @@ describe('the idle sweep', () => {
     expect(Date.now() - endedAt).toBeGreaterThanOrEqual(IDLE_MS - 100);
   }, 30_000);
 
+  it('stays up until the last of overlapping calls has ended', async () => {
+    const { managed, client } = await start();
+    const states: string[] = [];
+    const sampler = setInterval(() => states.push(managed.state), 20);
+    const short = client.request(toolCall('sleep_for', { ms: 2 * IDLE_MS }), CallToolResultSchema, { timeout: 20_000 });
+    const long = client.request(toolCall('sleep_for', { ms: 4 * IDLE_MS }), CallToolResultSchema, { timeout: 20_000 });
+    await waitFor(() => managed.inFlight === 2);
+    await short;
+    expect(managed.inFlight).toBe(1);
+    const results = await Promise.all([short, long]).finally(() => clearInterval(sampler));
+    const endedAt = Date.now();
+    for (const result of results) expect(JSON.stringify(result.content)).toContain('slept');
+    expect(states.slice(states.indexOf('up'))).not.toContain('sleeping');
+
+    await waitFor(() => managed.state === 'sleeping');
+    expect(Date.now() - endedAt).toBeGreaterThanOrEqual(IDLE_MS - 100);
+  }, 30_000);
+
   it('does not keep a server up for a call its client cancelled', async () => {
     const { managed, client } = await start();
     const abort = new AbortController();

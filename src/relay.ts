@@ -67,12 +67,12 @@ export function deadline(caller: AbortSignal, timeoutMs: number, capMs?: number)
   };
 }
 
-/** True at most once per `intervalMs`. */
+/** True at most once per `intervalMs`; a clock that steps back opens it again. */
 export function gate(intervalMs: number, now: () => number = Date.now): () => boolean {
   let last = Number.NEGATIVE_INFINITY;
   return () => {
     const at = now();
-    if (at - last < intervalMs) return false;
+    if (at >= last && at - last < intervalMs) return false;
     last = at;
     return true;
   };
