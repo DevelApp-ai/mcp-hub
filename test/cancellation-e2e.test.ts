@@ -516,3 +516,30 @@ describe('mcp-hub-stdio', () => {
     await close();
   }, 30_000);
 });
+
+/** What /health reports as a server's calls in flight. */
+async function inFlight(server: string): Promise<number> {
+  const response = await request(hub.app).get('/health').set('Authorization', `Bearer ${token}`);
+  return (response.body as { servers: Record<string, { inFlight: number }> }).servers[server].inFlight;
+}
+
+describe('/health', () => {
+  it('counts the calls a server has in flight, and stops counting one its client cancelled', async () => {
+    expect(await inFlight('cancel')).toBe(0);
+    const client = await connect('/cancel/mcp', 'auto');
+    const since = Date.now();
+    const abort = new AbortController();
+    const pending = client.request(toolCall('wait_for_cancel'), CallToolResultSchema, { signal: abort.signal });
+    await startedSince('cancel', 'wait_for_cancel', since);
+    expect(await inFlight('cancel')).toBe(1);
+
+    abort.abort();
+    await expect(pending).rejects.toThrow();
+    const until = Date.now() + 5_000;
+    while ((await inFlight('cancel')) !== 0) {
+      if (Date.now() > until) throw new Error('inFlight never went back to 0');
+      await pause(25);
+    }
+    await client.close();
+  }, 30_000);
+});

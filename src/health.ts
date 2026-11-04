@@ -23,6 +23,7 @@ export function healthHandler(supervisor: Supervisor) {
           kind: s.config.kind,
           restarts: s.restarts,
           tools: s.tools.length,
+          inFlight: s.inFlight,
           hub: s.config.hub,
           // Only present when a filter is configured, so every other server's
           // entry keeps its shape. `tools` keeps its meaning: what a client sees.
