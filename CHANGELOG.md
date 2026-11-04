@@ -28,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that call left behind until its idle timeout. The sweep now looks again until
   the start has settled, waits for the call, and then puts the server to sleep
   or restarts it.
+- The `@modelcontextprotocol/*` ranges start at the versions the hub is tested
+  with — `client`, `core` and `server` 2.4.0, `node` 2.1.2, `express` 2.0.2 —
+  instead of 2.0.0. The lockfile, and so the image, already had them, but an
+  install of the npm package could still settle on an older 2.x that
+  GHSA-jm63-cq47-j5jp, GHSA-46jr-4wx8-v453, GHSA-f897-62hf-6gxq,
+  GHSA-6prh-2h8m-c8cw, GHSA-6qxp-vccf-f47h or GHSA-rvq5-wwqv-78pq covers.
 
 ### Added
 
