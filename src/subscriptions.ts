@@ -46,7 +46,7 @@ export const MAX_SUBSCRIPTIONS = positiveIntegerEnv('MCP_MAX_SUBSCRIPTIONS', 102
  */
 export const MAX_SUBSCRIPTION_URIS = positiveIntegerEnv('MCP_SUBSCRIPTION_MAX_URIS', 64);
 
-/** SSE comment-frame keepalive for listen streams; `0` disables it. */
+/** SSE comment-frame keepalive for every answer that streams, listen streams and progress alike; `0` disables it. */
 export const KEEPALIVE_MS = nonNegativeIntegerEnv('MCP_SUBSCRIPTION_KEEPALIVE_MS', 15_000);
 
 /**

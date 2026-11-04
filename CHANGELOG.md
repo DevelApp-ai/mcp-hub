@@ -55,7 +55,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reverse proxy that cuts a long call now stops it.
 - A `2025-11-25` POST whose body carries a `progressToken` is answered as
   `text/event-stream` with keep-alive comments instead of JSON. Every other 2025
-  answer stays JSON.
+  answer stays JSON. `MCP_SUBSCRIPTION_KEEPALIVE_MS` sets the interval for every
+  answer that is a stream, and `0` turns the comments off there too.
 - With `MCP_RESET_TIMEOUT_ON_PROGRESS=true` every forwarded request carries a
   progress token of the hub's own, so a child's progress keeps the call alive
   even when the client asked for none.

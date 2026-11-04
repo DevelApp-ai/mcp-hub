@@ -127,7 +127,7 @@ What a client may watch, and how much of it the hub will hold open. See
 | `MCP_SUBSCRIPTIONS` | `true` | The whole feature. `false` is the emergency brake for every server at once; per server, use `"subscriptions": "off"` in `mcp.json`. |
 | `MCP_MAX_SUBSCRIPTIONS` | `1024` | Open `subscriptions/listen` streams one route will serve before refusing the next. |
 | `MCP_SUBSCRIPTION_MAX_URIS` | `64` | Resource URIs one filter may name. Every URI is an upstream subscription the hub holds and reconciles, so an unbounded list is a way to make it do unbounded work on one request. Over this the call is refused with `-32602`. |
-| `MCP_SUBSCRIPTION_KEEPALIVE_MS` | `15000` | SSE keepalive on a listen stream; `0` disables it. |
+| `MCP_SUBSCRIPTION_KEEPALIVE_MS` | `15000` | SSE keep-alive comment interval on every answer that is an event stream: a `subscriptions/listen` stream, and a call answered as a stream because it reports progress. `0` disables it on both, and a reverse proxy may then cut a stream that stays silent. |
 | `MCP_SUBSCRIPTION_DEBOUNCE_MS` | `250` | Coalescing window. Within it, repeats of the same event collapse to one — which is what the notification means anyway: read it again, not here is what changed. `0` delivers each event as it arrives. |
 | `MCP_SUBSCRIPTION_MAX_MS` | `1800000` | How long one stream may stay open before the hub closes it; `0` means as long as the socket lives. A reaper for clients that go away without closing anything. |
 | `MCP_SUBSCRIPTION_MAX_URI_BYTES` | `8192` | Longest URI a `resources/updated` notification may carry. A URI names what to re-read; a longer one is dropped with a warning (at most one a minute per route) instead of being held and forwarded. |
