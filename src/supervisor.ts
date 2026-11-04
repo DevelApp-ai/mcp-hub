@@ -1081,7 +1081,8 @@ export class Supervisor {
     const now = Date.now();
     for (const server of this.servers.values()) {
       if (!server.onDemand || server.state !== 'up' || server.idleMs <= 0) continue;
-      if (now - server.lastUsedAt < server.idleMs) continue;
+      // A call still running means the server is not idle, however long ago it began.
+      if (server.inFlight > 0 || now - server.lastUsedAt < server.idleMs) continue;
       console.log(`[${server.name}] idle for ${Math.round((now - server.lastUsedAt) / 60_000)}m, going to sleep`);
       void server.sleep();
     }
