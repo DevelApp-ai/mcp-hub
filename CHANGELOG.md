@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- #region changelog -->
 
+## [Unreleased]
+
+### Added
+
+- **Progress reaches the client.** A child's `notifications/progress` travels
+  back under the token the client chose, through `/<name>/mcp`, `/hub` and
+  `mcp-hub-stdio`, at most four a second per call and with its message cleaned
+  like any other child text. A `2025-11-25` request that asks for progress is
+  answered as an event stream, the only shape that can carry it.
+- **`MCP_MAX_CALL_MS`** (default 30 minutes, never below `MCP_CALL_TIMEOUT_MS`)
+  bounds a call while `MCP_RESET_TIMEOUT_ON_PROGRESS` lets progress restart the
+  deadline. At the bound the call is cancelled at the child.
+- `/health` reports `inFlight` per server: the forwarded requests whose answer
+  the hub is still waiting for.
+
+### Changed
+
+- **A dropped connection cancels the call at the child.** Before, the child
+  finished the work, side effects included, while nobody read the answer — a
+  reverse proxy that cuts a long call now stops it.
+- A `2025-11-25` POST whose body carries a `progressToken` is answered as
+  `text/event-stream` with keep-alive comments instead of JSON. Every other 2025
+  answer stays JSON.
+- With `MCP_RESET_TIMEOUT_ON_PROGRESS=true` every forwarded request carries a
+  progress token of the hub's own, so a child's progress keeps the call alive
+  even when the client asked for none.
+- A call that runs out of time fails with "The request ran past the hub's
+  deadline." instead of "Request timed out", and leaves a line in the log.
+
+### Fixed
+
+- **A client's cancellation is passed on to the child** (#129). A call the
+  client gives up on — by closing the request's stream on `2026-07-28`, with
+  `notifications/cancelled` over `mcp-hub-stdio`, or by dropping the connection —
+  is cancelled at the child with the hub's own reason, never the client's text,
+  and logged with the tool and how long it ran. A child such as imap-mcp stops
+  its work instead of holding its connection until the deadline, the call stops
+  counting as in flight, and a client that retries no longer stacks abandoned
+  calls on one child. The hub's own deadline cancels at the child as well. A
+  2025 `notifications/cancelled` over HTTP cannot be matched by a stateless
+  hub; see the known gaps and #130.
+- **`MCP_RESET_TIMEOUT_ON_PROGRESS=true` had no effect.** The hub never asked
+  the child for progress, so progress never restarted the deadline, and never
+  reached the client either.
+- **The idle sweep put servers to sleep mid-call.** It looked only at when a
+  call began, so a call longer than the idle timeout lost its child. A server
+  with a call in flight now stays up, and the end of a call restarts the idle
+  clock.
+- A timeout above `2147483647` ms — `MCP_CALL_TIMEOUT_MS` with one zero too
+  many — made every call fail after a millisecond. It is now cut to the longest
+  a timer can wait, with a warning.
+- The docs said `HTTP_REQUEST_TIMEOUT_MS` bounds a tool call. It only bounds
+  sending the request; for a silent answer the reverse proxy's read timeout is
+  the outer limit.
+
 ## [0.12.0] - 2026-11-03
 
 ### Added

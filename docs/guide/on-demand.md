@@ -26,8 +26,10 @@ boot ──(cached snapshot)──► sleeping ──(tool call / wake)──►
   call is just slower. Concurrent requests share the one start; after 120
   seconds without a successful start the request fails with the server's last
   error.
-- **Idle.** Every forwarded request resets the server's idle clock. Once it has
-  been quiet for the idle timeout, the hub tears it down: the stdio child
+- **Idle.** Every forwarded request resets the server's idle clock, and so does
+  its end: a server with a call still running is not quiet, however long the
+  call takes. Once it has been quiet for the idle timeout, the hub tears it
+  down: the stdio child
   exits, a sandbox container is removed. The hub's internal keepalive ping does
   not count as activity — and a sleeping server is not pinged at all.
 
