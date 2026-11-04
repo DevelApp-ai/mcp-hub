@@ -177,6 +177,32 @@ describe.runIf(RUNS_HERE)('a child that will not answer', () => {
     expect(after.isError ?? false).toBe(false);
   }, 60_000);
 
+  it('cancels a call at the child the moment its client gives up', async () => {
+    // Before #129 the hub never passed a cancellation on: the child held the
+    // call until the deadline, and so did the hub's own count of calls in flight.
+    const label = `cancel-${Date.now()}`;
+    const client = await clients.connect('/hub', hubToken);
+    const abort = new AbortController();
+    const call = client.callTool(
+      { name: 'call_tool', arguments: { server: 'hanger', tool: 'hang_forever', arguments: { label } } },
+      { signal: abort.signal }
+    );
+    await gateway.waitForLog(new RegExp(`hang_forever started ${label}`), 10_000);
+    abort.abort();
+    await expect(call).rejects.toThrow();
+    const abortedAt = Date.now();
+
+    await gateway.waitForLog(new RegExp(`hang_forever cancelled ${label}: The client cancelled the request\\.`), 5_000);
+    await gateway.waitForLog(/\[hanger\] client cancelled tools\/call "hang_forever"/, 5_000);
+    // Well inside the 2 s deadline this fleet runs with, so it was not the deadline.
+    for (;;) {
+      const health = (await wire.request('/health', { token: hubToken })).json as { servers: Record<string, { inFlight: number }> };
+      if (health.servers.hanger.inFlight === 0) break;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    expect(Date.now() - abortedAt).toBeLessThan(1_000);
+  }, 60_000);
+
   it('does not let one slow call block another server', async () => {
     const client = await clients.connect('/hub', hubToken);
     const slow = client.callTool({ name: 'call_tool', arguments: { server: 'hanger', tool: 'hang_for', arguments: { ms: 1500 } } });
