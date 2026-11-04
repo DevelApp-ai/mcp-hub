@@ -4,7 +4,7 @@ import { CallToolResultSchema } from '@modelcontextprotocol/core';
 import { withInputRequired } from '@modelcontextprotocol/client';
 
 import type { ManagedServer } from './supervisor.js';
-import { ABSOLUTE_CALL_OPTIONS, assertForwardedResultSize } from './mcp-limits.js';
+import { relay, type ClientResultSchema } from './relay.js';
 import { loggableToolName } from './tool-filter.js';
 import { locksTool } from './unlock/policy.js';
 import {
@@ -128,19 +128,8 @@ export async function forwardToolCall({
   const client = managed.client;
   if (!client) throw new Error(`Server "${managed.name}" is not running`);
 
-  const send = async <S extends Parameters<typeof client.request>[1]>(
-    body: Record<string, unknown>,
-    resultSchema: S,
-    options: Partial<Parameters<typeof client.request>[2]> = {}
-  ): Promise<unknown> =>
-    managed.track(
-      client
-        .request({ method: 'tools/call', params: body } as Parameters<typeof client.request>[0], resultSchema, {
-          ...ABSOLUTE_CALL_OPTIONS,
-          ...options
-        })
-        .then(assertForwardedResultSize)
-    );
+  const send = (body: Record<string, unknown>, resultSchema: ClientResultSchema, allowInputRequired = false): Promise<unknown> =>
+    relay(managed, { method: 'tools/call', params: body }, resultSchema, ctx, { usage: true, tool, allowInputRequired });
 
   // `RequestMetaEnvelope` is published as `{}`, so the reserved keys cannot be
   // reached through it by name. The constant is the SDK's own, and the value it
@@ -200,7 +189,7 @@ export async function forwardToolCall({
   // rather than handing it over — `autoFulfill: false` makes an unhandled
   // `input_required` a typed error, which is exactly the shape a gateway needs
   // to opt out of, per call.
-  const result = (await send(body, withInputRequired(CallToolResultSchema), { allowInputRequired: true })) as
+  const result = (await send(body, withInputRequired(CallToolResultSchema), true)) as
     | CallToolResult
     | InputRequiredResult;
 

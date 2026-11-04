@@ -486,6 +486,7 @@ describe("a child's words in the hub's own answers", () => {
         }
       },
       markUsed: () => {},
+      touch: () => {},
       track: <T>(work: Promise<T>) => work,
       wake: async () => {},
       ...overrides

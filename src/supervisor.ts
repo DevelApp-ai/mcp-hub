@@ -849,6 +849,16 @@ export class ManagedServer {
   private inflight = 0;
   private readonly idleWaiters: Array<() => void> = [];
 
+  /** Forwarded requests that have not settled yet. */
+  get inFlight(): number {
+    return this.inflight;
+  }
+
+  /** Restarts the idle clock without counting as a fresh start. */
+  touch(): void {
+    this.lastUsedAt = Date.now();
+  }
+
   /** Counts a forwarded request until it settles. */
   track<T>(work: Promise<T>): Promise<T> {
     this.inflight++;
