@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { AuthStore } from '../src/auth/store.js';
 import { parseConfig } from '../src/config.js';
-import { Supervisor } from '../src/supervisor.js';
+import { ManagedServer, Supervisor } from '../src/supervisor.js';
 import { UnlockSweep } from '../src/unlock/sweep.js';
 
 const EVERYTHING = path.resolve('node_modules/@modelcontextprotocol/server-everything/dist/index.js');
@@ -75,6 +75,27 @@ describe('when the last unlock of a whole-locked server ends', () => {
     expect(managed.state).toBe('sleeping');
   }, 30_000);
 
+  it('comes back for a child that was still starting when the unlock ended', async () => {
+    // A call admitted just before the end wakes the child, and the end arrives
+    // while it starts. There is nothing to recycle yet, so the sweep has to
+    // look again once the child is up instead of forgetting the server.
+    const { managed, sweep } = await start({ unlock: true });
+    unlock();
+    await sweep.tick();
+    await managed.sleep();
+    const waking = managed.wake();
+    expect(managed.state).toBe('starting');
+    store.revokeUnlockGrants({ server: 'box' });
+    await sweep.tick();
+    await waking;
+    expect(managed.state).toBe('up');
+    await sweep.tick();
+    expect(managed.state).toBe('sleeping');
+    await sweep.tick();
+    const ended = vi.mocked(console.log).mock.calls.filter(([line]) => String(line).includes('last unlock ended'));
+    expect(ended).toEqual([[expect.stringContaining('put to sleep')]]);
+  }, 30_000);
+
   it('leaves the child alone while another client still holds an unlock', async () => {
     const { managed, sweep } = await start({ unlock: true });
     unlock('a');
@@ -113,6 +134,38 @@ describe('ManagedServer.recycle', () => {
     expect(await managed.recycle()).toBe('kept');
     expect(managed.state).toBe('sleeping');
   }, 30_000);
+
+  it('says pending for a child that is starting or waiting for its restart', async () => {
+    const server = new ManagedServer('box', { kind: 'stdio', command: '/bin/false', args: [], env: {}, hub: true });
+    for (const state of ['starting', 'down'] as const) {
+      server.state = state;
+      expect(await server.recycle()).toBe('pending');
+    }
+    await server.stop();
+  });
+
+  it('keeps a stopped or unauthorized server, so the sweep does not wait on it forever', async () => {
+    const server = new ManagedServer('box', { kind: 'stdio', command: '/bin/false', args: [], env: {}, hub: true });
+    for (const state of ['stopped', 'unauthorized'] as const) {
+      server.state = state;
+      expect(await server.recycle()).toBe('kept');
+    }
+    await server.stop();
+  });
+
+  it('keeps a remote or socket server whatever its state, since there is no child to recycle', async () => {
+    const servers = [
+      new ManagedServer('far', { kind: 'remote', transport: 'http', url: 'https://mcp.example.com/mcp', headers: {}, hub: true }),
+      new ManagedServer('boxed', { kind: 'socket', transport: 'unix', socketPath: path.join(dir, 'mcp.sock'), hub: true })
+    ];
+    for (const server of servers) {
+      for (const state of ['starting', 'down', 'up'] as const) {
+        server.state = state;
+        expect(await server.recycle()).toBe('kept');
+      }
+      await server.stop();
+    }
+  });
 });
 
 describe('ManagedServer.whenIdle', () => {

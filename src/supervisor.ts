@@ -881,9 +881,11 @@ export class ManagedServer {
     });
   }
 
-  /** Sleeps an on-demand child, restarts an always-on one, leaves remote ones. */
-  async recycle(): Promise<'slept' | 'restarted' | 'kept'> {
-    if (this.config.kind === 'remote' || this.config.kind === 'socket' || this.state !== 'up') return 'kept';
+  /** Sleeps an on-demand child, restarts an always-on one, leaves remote ones; `pending` while a start has yet to settle. */
+  async recycle(): Promise<'slept' | 'restarted' | 'kept' | 'pending'> {
+    if (this.config.kind === 'remote' || this.config.kind === 'socket') return 'kept';
+    if (this.state === 'starting' || this.state === 'down') return 'pending';
+    if (this.state !== 'up') return 'kept';
     if (this.onDemand) {
       await this.sleep();
       return 'slept';

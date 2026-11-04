@@ -22,6 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   control character but tab, newline and carriage return, every format
   character, both separators and any lone surrogate half, so removing one can
   no longer join two halves into a character the input never had.
+- **A whole-locked server is recycled even when its last unlock ends while it
+  starts.** A call admitted just before the end could wake the server, the
+  sweep found nothing to recycle yet and forgot it, and the child kept what
+  that call left behind until its idle timeout. The sweep now looks again until
+  the start has settled, waits for the call, and then puts the server to sleep
+  or restarts it.
 
 ### Added
 

@@ -56,6 +56,11 @@ export class UnlockSweep {
           continue;
         }
         const outcome = await managed.recycle();
+        if (outcome === 'pending') {
+          // The start may serve a call admitted before the end; look again once it has settled.
+          this.open.add(name);
+          continue;
+        }
         console.log(`mcp-hub: [${name}] last unlock ended — ${outcome === 'slept' ? 'put to sleep' : outcome === 'restarted' ? 'restarted' : 'nothing held open'}`);
       }
       for (const name of live) this.open.add(name);
