@@ -134,7 +134,8 @@ The proxy has to:
 - terminate TLS for `mcp.example.net` and forward to `127.0.0.1:7690`,
 - pass `X-Forwarded-Proto` and `Host`,
 - allow streaming responses (turn response buffering **off**),
-- allow a request to run longer than 310 seconds — MCP tool calls are long,
+- allow a request to run longer than 310 seconds — MCP tool calls are long, and
+  cutting one cancels it,
 - cap request bodies at or below `MCP_BODY_LIMIT` (default 1 MB).
 
 Sample configurations for nginx and Caddy are on the

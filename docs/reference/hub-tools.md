@@ -194,9 +194,11 @@ meta-tool with no `outputSchema` of its own: what comes back is shaped by the
 child, not by the hub, and the schema to validate it against is the
 `outputSchema` from [`get_tool_schema`](#get-tool-schema).
 
-Timeout: 5 minutes, reset whenever the child sends a progress notification. A
-failure comes back as a tool error (`Tool call failed: …`) rather than an HTTP
-error, so the model can react to it.
+Timeout: 5 minutes, absolute unless `MCP_RESET_TIMEOUT_ON_PROGRESS` lets
+progress extend it. A call that runs out, or that the client cancels, is
+cancelled at the child too, and progress the child reports reaches the caller
+under the caller's own token. A failure comes back as a tool error (`Tool call
+failed: …`) rather than an HTTP error, so the model can react to it.
 
 Calling a `sleeping` server wakes it first and blocks until it is up (120-second
 budget) — the call itself then proceeds normally. Only a start that fails for

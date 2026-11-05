@@ -118,7 +118,7 @@ mcp-hub speaks plain HTTP and expects a proxy in front of it. Requirements:
 | Pass `Host` and `X-Forwarded-Proto` | otherwise generated URLs are wrong |
 | **Overwrite** `X-Forwarded-For` | an appended header lets clients forge their address — see [Security](/guide/security#trusted-proxies) |
 | Response buffering **off** | MCP responses stream |
-| Request timeout above 310 s | tool calls are long; the hub's own default is 310 s |
+| Read timeout above 310 s | a tool call may take up to `MCP_CALL_TIMEOUT_MS` (300 s) to answer; a proxy that cuts it sooner cancels it at the child |
 | Body limit at or below `MCP_BODY_LIMIT` | reject oversized payloads before they reach Node |
 
 ### nginx
@@ -209,16 +209,16 @@ installed with `npm install -g ./package-1.0.0.tgz`.
 | `/livez` | none | process liveness — this is what the image `HEALTHCHECK` calls |
 | `/health` | Bearer | per-server state; `200` when all are up, `503` when any is not |
 
-`/health` returns each server's `state`, its `restarts` counter, its tool count
-and whether it is part of `/hub`:
+`/health` returns each server's `state`, its `restarts` counter, its tool count,
+the calls it has in flight and whether it is part of `/hub`:
 
 ```json
 {
   "status": "degraded",
   "servers": {
-    "paperless":     { "state": "up",           "kind": "stdio",  "restarts": 0, "tools": 14, "hub": true },
-    "homeassistant": { "state": "down",         "kind": "remote", "restarts": 3, "tools": 0,  "hub": true },
-    "some-saas":     { "state": "unauthorized", "kind": "remote", "restarts": 0, "tools": 0,  "hub": true }
+    "paperless":     { "state": "up",           "kind": "stdio",  "restarts": 0, "tools": 14, "inFlight": 1, "hub": true },
+    "homeassistant": { "state": "down",         "kind": "remote", "restarts": 3, "tools": 0,  "inFlight": 0, "hub": true },
+    "some-saas":     { "state": "unauthorized", "kind": "remote", "restarts": 0, "tools": 0,  "inFlight": 0, "hub": true }
   }
 }
 ```

@@ -150,6 +150,13 @@ between the two legs, which is precisely what this transport is good at — so
 `listChanged` and `subscriptions/listen` to a child. The full split is the
 [capability matrix](/reference/standards#what-is-carried-per-revision).
 
+Cancellation follows the same split. A `2026-07-28` client gives up by closing
+the request's stream, which the hub sees and passes on to the child. A
+`2025-11-25` client sends `notifications/cancelled` on a fresh POST, to an
+instance that never saw the call — over HTTP such a call is cancelled only when
+its connection drops. Progress travels back on both eras; a 2025 request that
+asks for it is answered as a stream.
+
 ### Why a 2025 client is not bridged to a modern child
 
 A child on `2026-07-28` can raise a question that a `2025-11-25` client, over
@@ -304,8 +311,10 @@ six meta-tools, and schemas fetched only when needed.
 The hub keeps a per-server tool cache, refreshed when a child sends
 `tools/list_changed`, so `list_tools` answers without a round trip to the
 child. `call_tool` forwards with a five-minute deadline that is absolute by
-default — a progress notification does not extend it unless
-`MCP_RESET_TIMEOUT_ON_PROGRESS` says so.
+default — a progress notification extends it only with
+`MCP_RESET_TIMEOUT_ON_PROGRESS=true`, and then `MCP_MAX_CALL_MS` still bounds
+the call. A call that runs out, or that its client cancels, is cancelled at the
+child too.
 
 Servers marked `"hub": false` are invisible here: `list_servers` omits them and
 `call_tool` refuses them. Their own paths are unaffected.

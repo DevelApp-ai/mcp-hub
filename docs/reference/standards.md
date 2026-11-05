@@ -117,6 +117,8 @@ admit.
 | `resources/list`, `resources/templates/list`, `resources/read` | carried | carried |
 | `prompts/list`, `prompts/get` | carried | carried |
 | `completion/complete` | carried | carried |
+| **Cancellation** — a client giving up on a call | **carried**: closing the request's stream cancels it at the child | over HTTP only when the connection drops — a `notifications/cancelled` cannot be matched (below); over `mcp-hub-stdio`, carried |
+| **Progress** — a child's `notifications/progress` | carried, under the client's own token, at most four a second | carried; a request that asks for it is answered as a stream |
 | A tool's `outputSchema` and a result's `structuredContent` | carried | carried, with the SEP-2106 wrap |
 | **Elicitation** — a child asking the person a question | **carried both ways** | not offered |
 | Embedded `sampling/createMessage` or `roots/list` in a child's question | dropped, and named in the log | — |
@@ -175,6 +177,25 @@ has no channel for one — so rather than announce a capability whose answer
 would be dropped, the hub stays quiet and the child takes its own fallback.
 That is the same rule as the two rows above it, applied before the mistake
 instead of after.
+
+**Cancellation is the row with a footnote on one era.** On `2026-07-28` a
+client gives up on a call by closing that request's stream. The hub passes it
+on: the child receives `notifications/cancelled` — behind a `2026-07-28` HTTP
+upstream, its own request stream closes — with the hub's reason, never the
+client's text. The same happens when the hub's own deadline runs out.
+
+On `2025-11-25` a client sends `notifications/cancelled` on a POST of its own,
+and a stateless hub has nothing to match it against: the instance that answers
+it never saw the call, and the id it names is unique only within a session the
+hub does not keep. Matching it anyway could cancel another session's call —
+see [#130](https://github.com/ni-c/mcp-hub/issues/130). So over HTTP a 2025
+call is cancelled only when its connection drops. `mcp-hub-stdio` keeps one
+instance per connection, and there both eras are carried.
+
+Progress travels the other way through the same relay. A 2025 POST that carries
+a `progressToken` is answered as an event stream rather than as JSON, because a
+JSON answer has nowhere to put a notification; every other 2025 answer stays
+JSON.
 
 The authorization behaviour follows the specification revision that made
 metadata documents the preferred registration mechanism and deprecated dynamic

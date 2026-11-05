@@ -33,10 +33,21 @@ if (process.env.HANG === 'init') {
   serveStdio(() => {
     const server = new McpServer({ name: 'hang-fixture', version: '1.0.0' });
 
+    // Never returns. It only says on stderr when a call starts and when the hub
+    // cancels it, so a test can watch the cancellation arrive; `label` tells
+    // one call's lines from another's.
     server.registerTool(
       'hang_forever',
-      { title: 'Hang forever', description: 'Never returns.', inputSchema: z.object({}) },
-      () => new Promise(() => {})
+      { title: 'Hang forever', description: 'Never returns.', inputSchema: z.object({ label: z.string().optional() }) },
+      ({ label = '' }, ctx) =>
+        new Promise(() => {
+          process.stderr.write(`hang_forever started ${label}\n`);
+          ctx.mcpReq.signal.addEventListener(
+            'abort',
+            () => process.stderr.write(`hang_forever cancelled ${label}: ${String(ctx.mcpReq.signal.reason)}\n`),
+            { once: true }
+          );
+        })
     );
 
     server.registerTool(

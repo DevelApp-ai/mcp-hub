@@ -273,7 +273,7 @@ The local `--stdio` mode uses neither variable.
 | `MCP_MAX_CONCURRENT_REQUESTS`   | no                  | in-flight request limit per OAuth client, default `4`                                                                         |
 | `MCP_MAX_CONCURRENT_STREAMS`    | no                  | open SSE listening streams per OAuth client — one per connected session, default `32`                                         |
 | `HTTP_HEADERS_TIMEOUT_MS`       | no                  | Node HTTP header timeout, default `10000`                                                                                     |
-| `HTTP_REQUEST_TIMEOUT_MS`       | no                  | complete request timeout, default `310000` (slightly above the tool-call timeout)                                             |
+| `HTTP_REQUEST_TIMEOUT_MS`       | no                  | how long a client may take to send a request, default `310000`; it does not bound the answer                                  |
 | `PORT`                          | no                  | listen port (default 80 in the image, 3000 outside)                                                                           |
 | `CONFIG_PATH`                   | no                  | default `/config/mcp.json`                                                                                                    |
 | `DATA_PATH`                     | no                  | default `/data`                                                                                                               |
@@ -286,8 +286,9 @@ The local `--stdio` mode uses neither variable.
 | `DCR_INACTIVE_DAYS`             | no                  | how long an unused approved registration is kept, default `90`                                                                |
 | `IDLE_TIMEOUT_MINUTES`          | no                  | idle minutes before an on-demand server sleeps, default `60`; `0` disables it                                                 |
 | `TOOL_CACHE_PATH`               | no                  | snapshots of sleeping servers, default `<DATA_PATH>/tool-cache.json`                                                          |
-| `MCP_CALL_TIMEOUT_MS`           | no                  | deadline for one forwarded tool call, default `300000`                                                                        |
-| `MCP_RESET_TIMEOUT_ON_PROGRESS` | no                  | let progress notifications extend that deadline, default `false`                                                              |
+| `MCP_CALL_TIMEOUT_MS`           | no                  | deadline for one forwarded call, default `300000`; then the call is cancelled at the child                                    |
+| `MCP_RESET_TIMEOUT_ON_PROGRESS` | no                  | let progress notifications restart that deadline, default `false`                                                             |
+| `MCP_MAX_CALL_MS`               | no                  | upper bound for a call while progress restarts the deadline, default `1800000`                                                |
 | `DOCKER_HOST`                   | with docker servers | the **policy proxy's** socket; a direct daemon socket fails closed                                                            |
 
 The full table, including what applies in stdio mode, is in the
@@ -390,7 +391,7 @@ deployment — it provides the isolation, read-only root filesystem and resource
 limits that SECURITY.md assumes.
 
 Reverse-proxy requirements: TLS termination, WebSockets/SSE allowed (proxy
-buffering off, a request timeout above 310 seconds, a request-body limit at or
+buffering off, a read timeout above 310 seconds, a request-body limit at or
 below `MCP_BODY_LIMIT`, and pass `X-Forwarded-Proto`/`Host`.
 
 Connect a client: add `https://<host>/hub` (or `https://<host>/<name>/mcp`

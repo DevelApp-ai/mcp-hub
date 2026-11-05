@@ -123,7 +123,9 @@ It expires, you press *Lock now*, the model calls `lock_server`, or
 refused again, and calls already running are allowed to finish.
 
 When the last unlock of a server that locks everything has ended, the hub waits
-for those calls (up to five minutes) and then ends what the server holds. An
+for those calls (up to five minutes) and then ends what the server holds. A
+call admitted just before the end may still be waiting for the server to start;
+the hub then waits for the start to settle and for that call as well. An
 [on-demand](/guide/on-demand) server goes to sleep, an always-on one restarts. A
 shell session or a connection that was opened while the server was unlocked
 does not outlive the unlock. A server that locks only some tools keeps running,

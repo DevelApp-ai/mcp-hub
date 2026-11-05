@@ -22,10 +22,11 @@ import {
  * what a property is for.
  *
  * The first block is also the evidence behind a dismissed CodeQL alert.
- * `js/overly-large-range` flags the character class in `sanitiseText` as
- * probably a typo for a narrower one, and it was dismissed on the argument that
- * the breadth *is* the requirement. That argument is a claim about behaviour,
- * and until now nothing checked it. These tests are what make it a fact.
+ * `js/overly-large-range` flagged the character class in `sanitiseText`, then
+ * written as code-point ranges, as probably a typo for a narrower one, and it
+ * was dismissed on the argument that the breadth *is* the requirement. The class
+ * is written as Unicode categories now; which characters those cover is still a
+ * claim about behaviour, and these tests are what make it a fact.
  */
 
 const RUNS = { numRuns: 500 };
@@ -49,11 +50,20 @@ const UNSAFE_CODE_POINTS = [
   0x0c,
   ...range(0x0e, 0x1f),
   0x7f, // DEL
+  ...range(0x80, 0x9f), // C1, with NEL and the single-byte CSI
+  0xad, // soft hyphen
+  0x061c, // Arabic letter mark
+  0x180e, // Mongolian vowel separator
   ...range(0x200b, 0x200f), // zero-width and directional marks
+  0x2028, // line separator
+  0x2029, // paragraph separator
   ...range(0x202a, 0x202e), // bidi embedding and override
-  0x2060, // word joiner
-  ...range(0x2066, 0x2069), // bidi isolates
-  0xfeff // BOM
+  ...range(0x2060, 0x2064), // word joiner and the invisible operators
+  ...range(0x2066, 0x206f), // bidi isolates and the deprecated format characters
+  0xfeff, // BOM
+  ...range(0xfff9, 0xfffb), // interlinear annotation
+  0xe0001, // language tag
+  ...range(0xe0020, 0xe007f) // tag characters, an invisible copy of ASCII
 ];
 
 /** The three control characters a prompt may legitimately contain. */
@@ -67,9 +77,16 @@ const unsafeChar = fc
   .constantFrom(...UNSAFE_CODE_POINTS)
   .map((code) => String.fromCodePoint(code));
 
+/**
+ * Half of a surrogate pair on its own. JSON carries one as an escape, so a
+ * child can send it, and two of them around a removed character must not
+ * join into a character the input never had.
+ */
+const loneSurrogate = fc.integer({ min: 0xd800, max: 0xdfff }).map((code) => String.fromCharCode(code));
+
 /** Text with unsafe characters sprinkled through it, as a hostile child writes it. */
 const hostileText = fc
-  .array(fc.oneof(fc.string(), unsafeChar), { maxLength: 40 })
+  .array(fc.oneof(fc.string(), unsafeChar, loneSurrogate), { maxLength: 40 })
   .map((parts) => parts.join(''));
 
 describe('sanitiseText removes exactly what it claims', () => {
@@ -78,9 +95,9 @@ describe('sanitiseText removes exactly what it claims', () => {
    *
    * This is the whole argument for the width of the class: a bidi override
    * reverses the attribution line so `Server "x" asks:` renders as something
-   * else, and a zero-width character hides content from the reader that the
-   * model still sees. Stated over every one of the 44 code points rather than
-   * over the handful an example test would list.
+   * else, and a zero-width or tag character hides content from the reader that
+   * the model still sees. Stated over every one of the code points above rather
+   * than over the handful an example test would list.
    */
   it('no unsafe character survives, wherever it sat', () => {
     fc.assert(

@@ -44,6 +44,13 @@ and `resources/subscribe` would require the hub to remember who asked for what.
 Both are therefore not advertised to a 2025 client at all, rather than announced
 and dropped — which is what the hub used to do.
 
+**A `2025-11-25` client's cancellation reaches the child only when its
+connection drops.** Its `notifications/cancelled` arrives on a POST of its own,
+and the stateless transport has no session to match the request id against.
+A `2026-07-28` client cancels by closing the request's stream, which is carried,
+and so is either era over `mcp-hub-stdio`. Ideas for matching it anyway, and
+why they wait: [#130](https://github.com/ni-c/mcp-hub/issues/130).
+
 **A change made while a child is asleep is not reported as such.** An on-demand
 server holds no connection, so nothing is watched while it naps. The
 subscription survives as intent and is re-established on the next wake, followed

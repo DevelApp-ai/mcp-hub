@@ -105,10 +105,11 @@ the hub's own log lines instead.
 
 ### Tool calls fail after about a minute
 
-Your reverse proxy is cutting the request. MCP tool calls are long-running; the
-hub allows 310 seconds and its internal call timeout is 5 minutes (reset on
-progress notifications). Raise `proxy_read_timeout` / the equivalent to at
-least 330 seconds.
+Your reverse proxy is cutting the request. MCP tool calls are long-running,
+and the hub's own deadline is 5 minutes (`MCP_CALL_TIMEOUT_MS`). Raise
+`proxy_read_timeout` / the equivalent to at least 330 seconds. Since 0.13 a cut
+connection also cancels the call at the child, so a tool that is cut off stops
+working on it instead of finishing where nobody reads the answer.
 
 ### Requests get `429` with `MCP request rate limit exceeded`
 

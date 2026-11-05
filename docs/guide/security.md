@@ -390,8 +390,11 @@ deadline, and it is absolute by default — progress notifications do not extend
 it, because a child that emits one every few seconds could otherwise hold a
 request, and one of the client's concurrency slots, open forever. A deployment
 with genuinely long-running tools can raise `MCP_CALL_TIMEOUT_MS` or set
-`MCP_RESET_TIMEOUT_ON_PROGRESS=true`; both trade that bound for convenience and
-need `HTTP_REQUEST_TIMEOUT_MS` and the reverse proxy raised to match. A sandbox
+`MCP_RESET_TIMEOUT_ON_PROGRESS=true`; the latter is still bounded by
+`MCP_MAX_CALL_MS` (30 minutes by default), and both need the reverse proxy's
+read timeout raised to match. A call that runs out, or whose client cancels it,
+is cancelled at the child as well — with the hub's own reason, never the
+client's text. A sandbox
 that sends an oversized or corrupt Docker frame has its stream closed, container
 cleaned up and restart delayed by the normal supervisor backoff.
 

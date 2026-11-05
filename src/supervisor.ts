@@ -849,6 +849,16 @@ export class ManagedServer {
   private inflight = 0;
   private readonly idleWaiters: Array<() => void> = [];
 
+  /** Forwarded requests that have not settled yet. */
+  get inFlight(): number {
+    return this.inflight;
+  }
+
+  /** Restarts the idle clock without counting as a fresh start. */
+  touch(): void {
+    this.lastUsedAt = Date.now();
+  }
+
   /** Counts a forwarded request until it settles. */
   track<T>(work: Promise<T>): Promise<T> {
     this.inflight++;
@@ -871,9 +881,11 @@ export class ManagedServer {
     });
   }
 
-  /** Sleeps an on-demand child, restarts an always-on one, leaves remote ones. */
-  async recycle(): Promise<'slept' | 'restarted' | 'kept'> {
-    if (this.config.kind === 'remote' || this.config.kind === 'socket' || this.state !== 'up') return 'kept';
+  /** Sleeps an on-demand child, restarts an always-on one, leaves remote ones; `pending` while a start has yet to settle. */
+  async recycle(): Promise<'slept' | 'restarted' | 'kept' | 'pending'> {
+    if (this.config.kind === 'remote' || this.config.kind === 'socket') return 'kept';
+    if (this.state === 'starting' || this.state === 'down') return 'pending';
+    if (this.state !== 'up') return 'kept';
     if (this.onDemand) {
       await this.sleep();
       return 'slept';
@@ -1071,7 +1083,8 @@ export class Supervisor {
     const now = Date.now();
     for (const server of this.servers.values()) {
       if (!server.onDemand || server.state !== 'up' || server.idleMs <= 0) continue;
-      if (now - server.lastUsedAt < server.idleMs) continue;
+      // A call still running means the server is not idle, however long ago it began.
+      if (server.inFlight > 0 || now - server.lastUsedAt < server.idleMs) continue;
       console.log(`[${server.name}] idle for ${Math.round((now - server.lastUsedAt) / 60_000)}m, going to sleep`);
       void server.sleep();
     }

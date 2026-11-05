@@ -7,6 +7,88 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 <!-- #region changelog -->
 
+## [Unreleased]
+
+### Security
+
+- **Invisible characters no longer travel in a child's text.** What a child
+  writes reaches the person and the model through the hub — elicitation
+  prompts, error messages, titles and descriptions in the hub tools, and now
+  progress messages — and the filter on the way let C1 controls (NEL, the
+  single-byte CSI), U+2028 and U+2029, the Arabic letter mark, the invisible
+  operators and the Unicode tag characters through. Tag characters are an
+  invisible copy of ASCII: a child could hide an instruction in harmless text
+  that a model reads and a person never sees. The filter now removes every
+  control character but tab, newline and carriage return, every format
+  character, both separators and any lone surrogate half, so removing one can
+  no longer join two halves into a character the input never had.
+- **A whole-locked server is recycled even when its last unlock ends while it
+  starts.** A call admitted just before the end could wake the server, the
+  sweep found nothing to recycle yet and forgot it, and the child kept what
+  that call left behind until its idle timeout. The sweep now looks again until
+  the start has settled, waits for the call, and then puts the server to sleep
+  or restarts it.
+- The `@modelcontextprotocol/*` ranges start at the versions the hub is tested
+  with — `client`, `core` and `server` 2.4.0, `node` 2.1.2, `express` 2.0.2 —
+  instead of 2.0.0. The lockfile, and so the image, already had them, but an
+  install of the npm package could still settle on an older 2.x that
+  GHSA-jm63-cq47-j5jp, GHSA-46jr-4wx8-v453, GHSA-f897-62hf-6gxq,
+  GHSA-6prh-2h8m-c8cw, GHSA-6qxp-vccf-f47h or GHSA-rvq5-wwqv-78pq covers.
+
+### Added
+
+- **Progress reaches the client.** A child's `notifications/progress` travels
+  back under the token the client chose, through `/<name>/mcp`, `/hub` and
+  `mcp-hub-stdio`, at most four a second per call and with its message cleaned
+  like any other child text. A `2025-11-25` request that asks for progress is
+  answered as an event stream, the only shape that can carry it.
+- **`MCP_MAX_CALL_MS`** (default 30 minutes, never below `MCP_CALL_TIMEOUT_MS`)
+  bounds a call while `MCP_RESET_TIMEOUT_ON_PROGRESS` lets progress restart the
+  deadline. At the bound the call is cancelled at the child.
+- `/health` reports `inFlight` per server: the forwarded requests whose answer
+  the hub is still waiting for.
+
+### Changed
+
+- **A dropped connection cancels the call at the child.** Before, the child
+  finished the work, side effects included, while nobody read the answer — a
+  reverse proxy that cuts a long call now stops it.
+- A `2025-11-25` POST whose body carries a `progressToken` is answered as
+  `text/event-stream` with keep-alive comments instead of JSON. Every other 2025
+  answer stays JSON. `MCP_SUBSCRIPTION_KEEPALIVE_MS` sets the interval for every
+  answer that is a stream, and `0` turns the comments off there too.
+- With `MCP_RESET_TIMEOUT_ON_PROGRESS=true` every forwarded request carries a
+  progress token of the hub's own, so a child's progress keeps the call alive
+  even when the client asked for none.
+- A call that runs out of time fails with "The request ran past the hub's
+  deadline." instead of "Request timed out", and leaves a line in the log.
+
+### Fixed
+
+- **A client's cancellation is passed on to the child** (#129). A call the
+  client gives up on — by closing the request's stream on `2026-07-28`, with
+  `notifications/cancelled` over `mcp-hub-stdio`, or by dropping the connection —
+  is cancelled at the child with the hub's own reason, never the client's text,
+  and logged with the tool and how long it ran. A child such as imap-mcp stops
+  its work instead of holding its connection until the deadline, the call stops
+  counting as in flight, and a client that retries no longer stacks abandoned
+  calls on one child. The hub's own deadline cancels at the child as well. A
+  2025 `notifications/cancelled` over HTTP cannot be matched by a stateless
+  hub; see the known gaps and #130.
+- **`MCP_RESET_TIMEOUT_ON_PROGRESS=true` had no effect.** The hub never asked
+  the child for progress, so progress never restarted the deadline, and never
+  reached the client either.
+- **The idle sweep put servers to sleep mid-call.** It looked only at when a
+  call began, so a call longer than the idle timeout lost its child. A server
+  with a call in flight now stays up, and the end of a call restarts the idle
+  clock.
+- A timeout above `2147483647` ms — `MCP_CALL_TIMEOUT_MS` with one zero too
+  many — made every call fail after a millisecond. It is now cut to the longest
+  a timer can wait, with a warning, however many digits it has.
+- The docs said `HTTP_REQUEST_TIMEOUT_MS` bounds a tool call. It only bounds
+  sending the request; for a silent answer the reverse proxy's read timeout is
+  the outer limit.
+
 ## [0.12.0] - 2026-11-03
 
 ### Added

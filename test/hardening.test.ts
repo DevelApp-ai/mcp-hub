@@ -11,7 +11,7 @@ import { earlyRateLimit, rateLimitKey } from '../src/auth/rate-limit.js';
 import { stripPhantomSecret, withoutPhantomSecret } from '../src/auth/oidc/quirks.js';
 import { ClientRequestGate } from '../src/limits.js';
 import type { NextFunction, Request, Response } from 'express';
-import { ABSOLUTE_CALL_OPTIONS, ABSOLUTE_CALL_TIMEOUT_MS, MAX_FORWARDED_RESULT_BYTES, assertForwardedResultSize } from '../src/mcp-limits.js';
+import { CALL_TIMEOUT_MS, MAX_CALL_MS, MAX_FORWARDED_RESULT_BYTES, RESET_ON_PROGRESS, assertForwardedResultSize } from '../src/mcp-limits.js';
 
 const tmpDirs: string[] = [];
 
@@ -1015,19 +1015,95 @@ describe('MCP response and discovery budgets', () => {
 
   it('rejects forwarded results above 8 MiB and keeps the timeout absolute', () => {
     expect(() => assertForwardedResultSize({ content: 'x'.repeat(MAX_FORWARDED_RESULT_BYTES) })).toThrow(/forwarding limit/);
-    expect(ABSOLUTE_CALL_TIMEOUT_MS).toBe(5 * 60_000);
-    expect(ABSOLUTE_CALL_OPTIONS.resetTimeoutOnProgress).toBe(false);
+    expect(CALL_TIMEOUT_MS).toBe(5 * 60_000);
+    expect(RESET_ON_PROGRESS).toBe(false);
+    expect(MAX_CALL_MS).toBe(30 * 60_000);
   });
 
   it('lets a deployment raise the deadline and opt back into progress extending it', async () => {
-    const limits = await limitsWith({ MCP_CALL_TIMEOUT_MS: '1800000', MCP_RESET_TIMEOUT_ON_PROGRESS: 'true' });
-    expect(limits.ABSOLUTE_CALL_OPTIONS.timeout).toBe(30 * 60_000);
-    expect(limits.ABSOLUTE_CALL_OPTIONS.resetTimeoutOnProgress).toBe(true);
+    const limits = await limitsWith({ MCP_CALL_TIMEOUT_MS: '1800000', MCP_RESET_TIMEOUT_ON_PROGRESS: 'true', MCP_MAX_CALL_MS: '3600000' });
+    expect(limits.CALL_TIMEOUT_MS).toBe(30 * 60_000);
+    expect(limits.RESET_ON_PROGRESS).toBe(true);
+    expect(limits.MAX_CALL_MS).toBe(60 * 60_000);
   });
 
   it('falls back to the hardened defaults instead of exiting on nonsense', async () => {
-    const limits = await limitsWith({ MCP_CALL_TIMEOUT_MS: 'soon', MCP_RESET_TIMEOUT_ON_PROGRESS: 'maybe' });
-    expect(limits.ABSOLUTE_CALL_OPTIONS.timeout).toBe(limits.DEFAULT_CALL_TIMEOUT_MS);
-    expect(limits.ABSOLUTE_CALL_OPTIONS.resetTimeoutOnProgress).toBe(false);
+    const limits = await limitsWith({ MCP_CALL_TIMEOUT_MS: 'soon', MCP_RESET_TIMEOUT_ON_PROGRESS: 'maybe', MCP_MAX_CALL_MS: '-1' });
+    expect(limits.CALL_TIMEOUT_MS).toBe(limits.DEFAULT_CALL_TIMEOUT_MS);
+    expect(limits.RESET_ON_PROGRESS).toBe(false);
+    expect(limits.MAX_CALL_MS).toBe(limits.DEFAULT_MAX_CALL_MS);
+  });
+
+  it('cuts a deadline to what a timer can hold instead of letting it fire after 1 ms', async () => {
+    // Node runs a timer above 2^31-1 ms after one millisecond, so an
+    // unclamped value would end every forwarded call at once.
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const limits = await limitsWith({ MCP_CALL_TIMEOUT_MS: String(2 ** 31), MCP_MAX_CALL_MS: '99999999999' });
+      expect(limits.CALL_TIMEOUT_MS).toBe(limits.MAX_TIMER_MS);
+      expect(limits.MAX_CALL_MS).toBe(limits.MAX_TIMER_MS);
+      expect(errors).toHaveBeenCalledWith(expect.stringContaining('MCP_CALL_TIMEOUT_MS is longer than a timer can wait'));
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('keeps a value exactly at the timer limit without a warning', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const limits = await limitsWith({ MCP_CALL_TIMEOUT_MS: String(2 ** 31 - 1) });
+      expect(limits.CALL_TIMEOUT_MS).toBe(2 ** 31 - 1);
+      expect(errors).not.toHaveBeenCalled();
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('cuts a deadline past 2^53 the same way instead of falling back to five minutes', async () => {
+    // Past 2^53 the number is no longer a safe integer, but it still asks for
+    // longer than a timer can wait; the default would be the opposite answer.
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const limits = await limitsWith({ MCP_CALL_TIMEOUT_MS: '99999999999999999999', MCP_MAX_CALL_MS: '1e20' });
+      expect(limits.CALL_TIMEOUT_MS).toBe(limits.MAX_TIMER_MS);
+      expect(limits.MAX_CALL_MS).toBe(limits.MAX_TIMER_MS);
+      expect(errors).toHaveBeenCalledWith(expect.stringContaining('MCP_CALL_TIMEOUT_MS is longer than a timer can wait'));
+      expect(errors).toHaveBeenCalledWith(expect.stringContaining('MCP_MAX_CALL_MS is longer than a timer can wait'));
+      expect(errors).not.toHaveBeenCalledWith(expect.stringContaining('must be a positive integer'));
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('cuts on both sides of 2^53, where the fallback used to begin', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      for (const value of [String(Number.MAX_SAFE_INTEGER), String(2 ** 53)]) {
+        const limits = await limitsWith({ MCP_CALL_TIMEOUT_MS: value });
+        expect(limits.CALL_TIMEOUT_MS).toBe(limits.MAX_TIMER_MS);
+      }
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('still falls back on a deadline that is no integer at all, however large', async () => {
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const limits = await limitsWith({ MCP_CALL_TIMEOUT_MS: 'Infinity', MCP_MAX_CALL_MS: '-1e20' });
+      expect(limits.CALL_TIMEOUT_MS).toBe(limits.DEFAULT_CALL_TIMEOUT_MS);
+      expect(limits.MAX_CALL_MS).toBe(limits.DEFAULT_MAX_CALL_MS);
+      expect(errors).toHaveBeenCalledWith(expect.stringContaining('MCP_CALL_TIMEOUT_MS must be a positive integer'));
+      expect(errors).toHaveBeenCalledWith(expect.stringContaining('MCP_MAX_CALL_MS must be a positive integer'));
+      const fraction = await limitsWith({ MCP_CALL_TIMEOUT_MS: '3000000000.5' });
+      expect(fraction.CALL_TIMEOUT_MS).toBe(fraction.DEFAULT_CALL_TIMEOUT_MS);
+    } finally {
+      errors.mockRestore();
+    }
+  });
+
+  it('never lets the cap undercut the deadline it bounds', async () => {
+    const limits = await limitsWith({ MCP_CALL_TIMEOUT_MS: '600000', MCP_MAX_CALL_MS: '60000' });
+    expect(limits.MAX_CALL_MS).toBe(600_000);
   });
 });

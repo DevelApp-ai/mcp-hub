@@ -2,9 +2,9 @@ import type { Request, Response } from 'express';
 import { CompleteResultSchema, GetPromptResultSchema, ListPromptsResultSchema, ListResourcesResultSchema, ListResourceTemplatesResultSchema, ListToolsResultSchema, ReadResourceResultSchema } from '@modelcontextprotocol/core';
 import { NodeStreamableHTTPServerTransport, toNodeHandler, toWebRequest } from '@modelcontextprotocol/node';
 import { Server, ProtocolError, ProtocolErrorCode, createMcpHandler, isInputRequiredResult, isLegacyRequest } from '@modelcontextprotocol/server';
-import type { ListToolsResult, McpHttpHandler, ServerCapabilities, StandardSchemaV1 } from '@modelcontextprotocol/server';
+import type { ListToolsResult, McpHttpHandler, ServerCapabilities, ServerContext, StandardSchemaV1 } from '@modelcontextprotocol/server';
 import type { ManagedServer } from './supervisor.js';
-import { ABSOLUTE_CALL_OPTIONS, assertForwardedResultSize } from './mcp-limits.js';
+import { asksForProgress, relay, type ClientResultSchema } from './relay.js';
 import { filterTools, loggableToolName, toolAllowed } from './tool-filter.js';
 import { forwardToolCall } from './forward.js';
 import { callerFromAuth, callerOf } from './unlock/gate.js';
@@ -40,14 +40,6 @@ export type Era = 'modern' | 'legacy';
  * behaviour, and the code cares about the second one.
  */
 export const REVISION: Record<Era, string> = { modern: '2026-07-28', legacy: '2025-11-25' };
-
-/** What `Client.request` accepts as its second argument. Named so the two
- *  forwarding helpers below can be generic over it without repeating the
- *  `Parameters<...>` incantation twice. */
-type ClientResultSchema = Parameters<NonNullable<ManagedServer['client']>['request']>[1] & StandardSchemaV1;
-
-/** Per-call overrides on top of the absolute deadline every forward carries. */
-type ForwardOptions = Partial<Parameters<NonNullable<ManagedServer['client']>['request']>[2]>;
 
 /**
  * The child's capabilities minus what this proxy does not actually serve.
@@ -124,42 +116,26 @@ function buildProxyServer(managed: ManagedServer, secret: string, era: Era, gate
    * from the schema is also the honest description — this returns the child's
    * answer, parsed by the schema the caller chose.
    */
-  const forwardLive = <S extends ClientResultSchema>(
-    request: { method: string; params?: unknown },
-    resultSchema: S,
-    options: ForwardOptions = {}
-  ): Promise<StandardSchemaV1.InferOutput<S>> => {
-    const client = managed.client;
-    if (!client) throw new Error(`Server "${managed.name}" is not running`);
-    return managed.track(
-      client
-        .request(request as Parameters<NonNullable<ManagedServer['client']>['request']>[0], resultSchema, {
-          ...ABSOLUTE_CALL_OPTIONS,
-          ...options
-        })
-        .then(assertForwardedResultSize)
-    );
-  };
   // Real usage: wakes a sleeping on-demand server (blocking until it is up)
   // and resets its idle window. Everything else is answered without a child.
   const use = async <S extends ClientResultSchema>(
     request: { method: string; params?: unknown },
-    resultSchema: S,
-    options: ForwardOptions = {}
+    ctx: ServerContext,
+    resultSchema: S
   ): Promise<StandardSchemaV1.InferOutput<S>> => {
     if (managed.state !== 'up' || !managed.client) await managed.wake();
     managed.markUsed();
-    return forwardLive(request, resultSchema, options);
+    return relay(managed, request, resultSchema, ctx, { usage: true });
   };
   // A whole-locked server serves no resources or prompts without an unlock.
-  const lockedFor = (ctx: Parameters<UnlockGate['assertOpen']>[1]): boolean =>
+  const lockedFor = (ctx: ServerContext): boolean =>
     locksWholeServer(managed.config.unlock) && !(gate?.openForEverything(managed, callerOf(ctx)) ?? false);
-  const guarded = <S extends ClientResultSchema>(request: { method: string; params?: unknown }, ctx: Parameters<UnlockGate['assertOpen']>[1], resultSchema: S) => {
+  const guarded = <S extends ClientResultSchema>(request: { method: string; params?: unknown }, ctx: ServerContext, resultSchema: S) => {
     if (lockedFor(ctx)) {
       if (gate) gate.assertOpen(managed, ctx);
       throw new ProtocolError(ProtocolErrorCode.InvalidRequest, `Server "${managed.name}" is locked`);
     }
-    return use(request, resultSchema);
+    return use(request, ctx, resultSchema);
   };
   const caps = managed.capabilities ?? {};
   if (caps.tools) {
@@ -167,13 +143,13 @@ function buildProxyServer(managed: ManagedServer, secret: string, era: Era, gate
     // all hub paths configured enumerates them on connect, so answering from
     // the cached snapshot (instead of waking) is what keeps a fleet of
     // sleeping servers asleep. Neither branch counts as usage.
-    server.setRequestHandler('tools/list', async req => {
+    server.setRequestHandler('tools/list', async (req, ctx) => {
       // managed.tools is filtered on the way in, but the live branch forwards
       // the upstream's own answer and never consults it — so it has to filter
       // too. Missing this is the obvious bug here: the filter would appear to
       // work on a sleeping server and vanish the moment it woke.
       if (managed.state !== 'up' || !managed.client) return { tools: managed.tools };
-      const live = (await forwardLive(req, ListToolsResultSchema)) as ListToolsResult;
+      const live = (await relay(managed, req, ListToolsResultSchema, ctx, { usage: false })) as ListToolsResult;
       return { ...live, tools: filterTools(managed.config, live.tools) };
     });
     server.setRequestHandler('tools/call', async (req, ctx) => {
@@ -222,14 +198,14 @@ function buildProxyServer(managed: ManagedServer, secret: string, era: Era, gate
     });
   }
   if (caps.resources) {
-    server.setRequestHandler('resources/list', (req, ctx) => (lockedFor(ctx) ? { resources: [] } : use(req, ListResourcesResultSchema)));
+    server.setRequestHandler('resources/list', (req, ctx) => (lockedFor(ctx) ? { resources: [] } : use(req, ctx, ListResourcesResultSchema)));
     server.setRequestHandler('resources/templates/list', (req, ctx) =>
-      lockedFor(ctx) ? { resourceTemplates: [] } : use(req, ListResourceTemplatesResultSchema)
+      lockedFor(ctx) ? { resourceTemplates: [] } : use(req, ctx, ListResourceTemplatesResultSchema)
     );
     server.setRequestHandler('resources/read', (req, ctx) => guarded(req, ctx, ReadResourceResultSchema));
   }
   if (caps.prompts) {
-    server.setRequestHandler('prompts/list', (req, ctx) => (lockedFor(ctx) ? { prompts: [] } : use(req, ListPromptsResultSchema)));
+    server.setRequestHandler('prompts/list', (req, ctx) => (lockedFor(ctx) ? { prompts: [] } : use(req, ctx, ListPromptsResultSchema)));
     server.setRequestHandler('prompts/get', (req, ctx) => guarded(req, ctx, GetPromptResultSchema));
   }
   if (caps.completions) {
@@ -257,7 +233,9 @@ async function handleLegacyRequest(buildServer: () => Server, req: Request, res:
   const server = buildServer();
   const transport = new NodeStreamableHTTPServerTransport({
     sessionIdGenerator: undefined,
-    enableJsonResponse: true
+    // A JSON answer drops every notification, so a request that asks for progress gets a stream.
+    enableJsonResponse: !asksForProgress(req.body),
+    keepAliveMs: KEEPALIVE_MS
   });
   res.on('close', () => {
     void transport.close();
@@ -346,10 +324,7 @@ function beginListen(route: McpRoute, req: Request, res: Response): boolean {
     });
     return false;
   }
-  // Node's server-wide requestTimeout (310s by default) would otherwise cut
-  // every listen stream a few minutes in, which looks exactly like a flaky
-  // upstream and is not. A listening stream is idle by design; its lifetime is
-  // bounded by MAX_STREAM_MS below instead.
+  // No socket timeout for a stream that is idle by design; MAX_STREAM_MS below bounds its lifetime.
   req.setTimeout(0);
   const reaper =
     MAX_STREAM_MS > 0
