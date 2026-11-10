@@ -62,7 +62,8 @@ replaces N containers with one process:
 - **`/hub` aggregate**: register a _single_ connector and reach every server
   through 6 meta-tools (`list_servers`, `list_tools`, `get_tool_schema`,
   `call_tool`, `wake_server`, `sleep_server`) without flooding the model
-  context with N×tools schemas.
+  context with N×tools schemas. Clients that manage lifecycle themselves trim
+  the last two with `MCP_LIFECYCLE_TOOLS=false`.
 - **Per-server tool filtering**: `allowTools` / `denyTools` on any server decide
   which of its tools the hub exposes — exact names or `list_*` prefixes. A
   filtered tool is hidden from `tools/list` _and_ refused if a client calls it
