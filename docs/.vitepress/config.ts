@@ -109,6 +109,7 @@ export default defineConfig({
             { text: "Two-factor login", link: "/guide/two-factor" },
             { text: "Locked servers", link: "/guide/unlock" },
             { text: "Security", link: "/guide/security" },
+            { text: "DevelApp: networked deployment", link: "/guide/develapp-deployment" },
             { text: "FAQ & troubleshooting", link: "/guide/faq" },
           ],
         },
