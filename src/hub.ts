@@ -264,6 +264,13 @@ const prepare = async (managed: ManagedServer, warm = true): Promise<CallToolRes
  */
 export function buildHubServer(supervisor: Supervisor, secret: string, era: Era, gate?: UnlockGate): McpServer {
   const hub = new McpServer({ name: 'mcp-hub', version: VERSION });
+  // Two of the six meta-tools steer the on-demand lifecycle, and a client that
+  // runs its own idle management has no use for them: every tool a client can
+  // see costs context in every conversation, and a wheel nobody turns is
+  // surface arguing for itself. MCP_LIFECYCLE_TOOLS=false keeps them off the
+  // aggregate — read here rather than at module load so a test can flip it per
+  // case, and per request over HTTP for the same reason as MCP_DIAGNOSTICS.
+  const lifecycleTools = booleanEnv('MCP_LIFECYCLE_TOOLS', true);
   // Without a gate (stdio) nothing can unlock, so a whole-locked server stays shut.
   const shutFor = (managed: ManagedServer, ctx: Parameters<typeof callerOf>[0]): boolean =>
     locksWholeServer(managed.config.unlock) && !(gate?.openForEverything(managed, callerOf(ctx)) ?? false);
@@ -286,7 +293,9 @@ export function buildHubServer(supervisor: Supervisor, secret: string, era: Era,
       title: 'List MCP servers',
       description:
         'List all MCP servers available through this hub, with their status. Call this first to see what is available. ' +
-        'Servers marked "hidden" serve their tools only via their own endpoint, but wake_server/sleep_server still manage them.',
+        (lifecycleTools
+          ? 'Servers marked "hidden" serve their tools only via their own endpoint, but wake_server/sleep_server still manage them.'
+          : 'Servers marked "hidden" serve their tools only via their own endpoint, and lifecycle tools are switched off on this hub.'),
       inputSchema: z.object({}),
       outputSchema: listServersOutput,
       annotations: READS
@@ -468,47 +477,49 @@ export function buildHubServer(supervisor: Supervisor, secret: string, era: Era,
     }
   );
 
-  hub.registerTool(
-    'wake_server',
-    {
-      title: 'Wake a sleeping server',
-      description: 'Start an on-demand server now so its first tool call is fast. No-op if it is already running.',
-      inputSchema: z.object({ server: z.string().describe('Server name from list_servers') }),
-      outputSchema: wakeServerOutput,
-      annotations: LIFECYCLE
-    },
-    async ({ server }, ctx) => {
-      const managed = findServer(server);
-      if (!managed) return toolError(`Unknown server "${server}". Use list_servers to see available servers.`);
-      if (!managed.onDemand) return toolError(`Server "${server}" is always running.`);
-      if (shutFor(managed, ctx)) return toolError(`Server "${server}" is locked. Call one of its tools to get an unlock link for the user.`);
-      try {
-        await managed.wake();
-      } catch (error) {
-        return toolError(`Server "${server}" failed to start: ${reason(error)}`);
+  if (lifecycleTools) {
+    hub.registerTool(
+      'wake_server',
+      {
+        title: 'Wake a sleeping server',
+        description: 'Start an on-demand server now so its first tool call is fast. No-op if it is already running.',
+        inputSchema: z.object({ server: z.string().describe('Server name from list_servers') }),
+        outputSchema: wakeServerOutput,
+        annotations: LIFECYCLE
+      },
+      async ({ server }, ctx) => {
+        const managed = findServer(server);
+        if (!managed) return toolError(`Unknown server "${server}". Use list_servers to see available servers.`);
+        if (!managed.onDemand) return toolError(`Server "${server}" is always running.`);
+        if (shutFor(managed, ctx)) return toolError(`Server "${server}" is locked. Call one of its tools to get an unlock link for the user.`);
+        try {
+          await managed.wake();
+        } catch (error) {
+          return toolError(`Server "${server}" failed to start: ${reason(error)}`);
+        }
+        managed.markUsed();
+        return structured({ name: managed.name, status: managed.state, toolCount: managed.tools.length });
       }
-      managed.markUsed();
-      return structured({ name: managed.name, status: managed.state, toolCount: managed.tools.length });
-    }
-  );
+    );
 
-  hub.registerTool(
-    'sleep_server',
-    {
-      title: 'Put a server to sleep',
-      description: 'Stop an on-demand server immediately instead of waiting for its idle timeout. It restarts automatically on the next tool call.',
-      inputSchema: z.object({ server: z.string().describe('Server name from list_servers') }),
-      outputSchema: sleepServerOutput,
-      annotations: LIFECYCLE
-    },
-    async ({ server }) => {
-      const managed = findServer(server);
-      if (!managed) return toolError(`Unknown server "${server}". Use list_servers to see available servers.`);
-      if (!managed.onDemand) return toolError(`Server "${server}" is always running.`);
-      await managed.sleep();
-      return structured({ name: managed.name, status: managed.state });
-    }
-  );
+    hub.registerTool(
+      'sleep_server',
+      {
+        title: 'Put a server to sleep',
+        description: 'Stop an on-demand server immediately instead of waiting for its idle timeout. It restarts automatically on the next tool call.',
+        inputSchema: z.object({ server: z.string().describe('Server name from list_servers') }),
+        outputSchema: sleepServerOutput,
+        annotations: LIFECYCLE
+      },
+      async ({ server }) => {
+        const managed = findServer(server);
+        if (!managed) return toolError(`Unknown server "${server}". Use list_servers to see available servers.`);
+        if (!managed.onDemand) return toolError(`Server "${server}" is always running.`);
+        await managed.sleep();
+        return structured({ name: managed.name, status: managed.state });
+      }
+    );
+  }
 
   /**
    * The seventh tool, off unless an operator asks for it.
