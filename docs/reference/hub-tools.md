@@ -5,7 +5,10 @@ are configured. Four of them are how a client reaches everything else; the
 remaining two (`wake_server`, `sleep_server`) steer the
 [on-demand lifecycle](/guide/on-demand). A seventh,
 [`describe_connection`](#describe-connection), appears only where an operator
-switched diagnostics on.
+switched diagnostics on — and in the other direction,
+[`MCP_LIFECYCLE_TOOLS=false`](/reference/environment#lifecycle-tools) takes the
+lifecycle pair off, for a client that runs its own idle management (see
+[clients that own lifecycle](#clients-that-own-lifecycle)).
 
 Servers marked [`"hub": false`](/guide/configuration#hiding-a-server-from-hub)
 keep their *tools* out of the aggregate: `list_tools`, `get_tool_schema` and
@@ -48,6 +51,38 @@ list_servers  →  list_tools(server)  →  get_tool_schema(server, tool)  →  
 A model that already knows a tool's schema can skip straight to `call_tool`.
 The tool descriptions are written to steer that order, so no client-side
 prompting is needed.
+
+## Minimal clients, and clients that own lifecycle
+
+The aggregate is consumable by the smallest client the protocol allows: one
+that speaks `initialize`, `tools/list` and `tools/call` and nothing else — no
+elicitation, no sampling, no subscriptions. Every meta-tool is an ordinary
+tool, so such a client already reaches all of them: `list_servers`,
+`list_tools` and `get_tool_schema` are reads, `call_tool` is the write path,
+and the two lifecycle tools are optional extras on top. Nothing on this page
+needs more than those three methods; elicitation and subscriptions are
+capabilities of the connection, not of the aggregate, and a client that never
+offered them simply never hears from them.
+
+`wake_server` and `sleep_server` exist for clients that leave the lifecycle to
+the hub: they start a server before the first real call and free it early. A
+client that manages lifecycle **itself** — its own idle sweep, its own shutdown
+— should not have them: a server such a client just decided to stop comes back
+on the next `call_tool` anyway, so the wheel behind its own pedals only costs
+context in every conversation. Two switches pair up for exactly that client:
+
+- [`IDLE_TIMEOUT_MINUTES=0`](/reference/environment#limits-and-timeouts) — the
+  hub never puts a server to sleep on its own, so lifecycle is the client's
+  to run.
+- [`MCP_LIFECYCLE_TOOLS=false`](/reference/environment#lifecycle-tools) — the
+  pair is absent from `tools/list`, and a call to either name fails the way any
+  name that never existed does (`Tool … not found`). The aggregate the
+  client sees is four tools, and a `"hub": false` server's lifecycle is no
+  longer reachable through it at all — the client that owns lifecycle owns
+  that too.
+
+Both doors obey the switch: `/hub` (read per request) and `--stdio` (read per
+connection, so a hub spawned for one client is shaped for that client).
 
 ## `list_servers`
 
@@ -209,6 +244,9 @@ the whole budget surfaces as a tool error.
 > Start an on-demand server now so its first tool call is fast. No-op if it is
 > already running.
 
+Absent when [`MCP_LIFECYCLE_TOOLS=false`](/reference/environment#lifecycle-tools)
+— see [clients that own lifecycle](#clients-that-own-lifecycle).
+
 | Input | Type | Description |
 |---|---|---|
 | `server` | string, required | server name from `list_servers` |
@@ -222,6 +260,9 @@ still planning instead of inside the first real call. An always-running server
 
 > Stop an on-demand server immediately instead of waiting for its idle timeout.
 > It restarts automatically on the next tool call.
+
+Absent when [`MCP_LIFECYCLE_TOOLS=false`](/reference/environment#lifecycle-tools)
+— see [clients that own lifecycle](#clients-that-own-lifecycle).
 
 | Input | Type | Description |
 |---|---|---|

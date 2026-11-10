@@ -117,6 +117,16 @@ carries upstream URLs, internal hostnames and text written by the children;
 serving it through `/hub` would let any registered connector read what every
 other connector is doing.
 
+## Lifecycle tools
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `MCP_LIFECYCLE_TOOLS` | `true` | Keeps `wake_server` and `sleep_server` on the aggregate. `false` takes the pair off — for a client that runs its own idle management, so the hub's steering wheel is not sitting behind its own. Pair with `IDLE_TIMEOUT_MINUTES=0` when the client owns lifecycle outright. The four data-plane meta-tools stay either way; a call to a trimmed name fails the way any name that never existed does. See [hub meta-tools](/reference/hub-tools#clients-that-own-lifecycle). |
+
+Read per request over HTTP and per connection over stdio, so a connector that
+never asked for the pair does not pay for one that did — and a hub spawned for
+one client is shaped for that client.
+
 ## Subscriptions
 
 What a client may watch, and how much of it the hub will hold open. See
@@ -164,6 +174,7 @@ apply. What it reads:
 |---|---|---|
 | `CONFIG_PATH` | `mcp.json` in the working directory | Same file, same hot reload. A missing file starts an empty hub instead of failing — the client that spawned the process has nowhere to show a startup error. |
 | `IDLE_TIMEOUT_MINUTES` | `60` | As above. Worth keeping on: a hub spawned per client session would otherwise start every configured server at every launch. |
+| `MCP_LIFECYCLE_TOOLS` | `true` | As above, but read per connection rather than per request — a hub spawned for one client is shaped for that client. |
 | `TOOL_CACHE_PATH` | `.mcp-hub/tool-cache.json` beside the config | As above, but there is no `DATA_PATH` here to derive it from. |
 | `DATA_PATH` | *(unset)* | Optional here, unlike over HTTP. Point it at an HTTP hub's `/data` to reuse and refresh an [upstream OAuth token](/guide/configuration#upstreams-that-speak-oauth) authorized there. Without it, a server with an `oauth` block is skipped — there is no listener for a browser to return to. |
 | `LOG_FILE` | *(unset)* | Same as above. Logging otherwise goes to stderr: in stdio mode stdout carries the protocol, so `console.log` output is moved out of the way. |
