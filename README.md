@@ -456,6 +456,25 @@ immediately. Per-client recipes:
 | `/.well-known/oauth-authorization-server[/…]`                        | none                       | RFC 8414 metadata                                                 |
 | `/.well-known/oauth-protected-resource[/…]`                          | none                       | RFC 9728 metadata (path-scoped)                                   |
 
+### Protocol revisions
+
+Every MCP endpoint — `/<name>/mcp`, `/hub` and the `--stdio` aggregate —
+answers the opening `initialize` in the era of the exchange. A modern client
+probes with `server/discover` and is answered `2026-07-28`. Every plain
+opening — whatever revision it offers — is answered by the 2025-era
+negotiation, and that is echo-or-counteroffer, never a refusal: an offer of
+`2025-11-25`, `2025-06-18`, `2025-03-26`, `2024-11-05` or `2024-10-07` is
+echoed back unchanged, and anything else — a typo, a future revision, a bare
+`2026-07-28` written without the discover claim — is answered with the
+counteroffer `2025-11-25`, and the handshake continues on it.
+
+No endpoint rejects an `initialize` over its `protocolVersion` and none waits
+for a better one: the answer is always a result, promptly. A client pinned to
+an older revision — `2025-06-18` is a common pin in small stdio clients —
+works as-is on both doors. `test/revision-compat.test.ts` pins the echo, the
+counteroffer and the no-hang behaviour on `--stdio`, `/hub` and a per-server
+route.
+
 ## Notes & limitations
 
 - Change notifications (`listChanged`, resource updates) are carried on
