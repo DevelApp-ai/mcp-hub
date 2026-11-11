@@ -134,17 +134,17 @@ describe('over HTTP', () => {
   });
 });
 
+function writeConfig(): string {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-hub-lifecycle-stdio-'));
+  const file = path.join(dir, 'mcp.json');
+  fs.writeFileSync(file, JSON.stringify({ mcpServers: {} }));
+  return file;
+}
+
 describe('over stdio', () => {
   // The stdio hub is spawned per client session, so a hub trimmed for the
   // client that asked for it is the mode's own shape of the feature.
   const started: Array<Awaited<ReturnType<typeof createStdioHub>>> = [];
-
-  function writeConfig(): string {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-hub-lifecycle-stdio-'));
-    const file = path.join(dir, 'mcp.json');
-    fs.writeFileSync(file, JSON.stringify({ mcpServers: {} }));
-    return file;
-  }
 
   afterEach(async () => {
     for (const stdio of started.splice(0)) {

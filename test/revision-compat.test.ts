@@ -86,6 +86,7 @@ async function openStdioSession(): Promise<RawSession> {
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   const handle = serveStdio(ctx => hub.build(ctx.era), { transport: serverTransport });
   const pending = new Map<number, (answer: Answer) => void>();
+  // oxlint-disable-next-line unicorn/prefer-add-event-listener -- InMemoryTransport is not an EventTarget; onmessage is its only message hook
   clientTransport.onmessage = message => {
     if (!('id' in message) || typeof message.id !== 'number') return;
     const settle = pending.get(message.id);
@@ -197,7 +198,7 @@ describe('the revision an opening exchange is answered in, over HTTP', () => {
     hub = await createHub({
       externalUrl: 'http://localhost:3000',
       configPath,
-      datapath: path.join(tmpDir, 'data'),
+      dataPath: path.join(tmpDir, 'data'),
       password: PASSWORD,
       requireResourceBoundTokens: false,
       idleTimeoutMinutes: 0
