@@ -198,7 +198,7 @@ describe('the revision an opening exchange is answered in, over HTTP', () => {
     hub = await createHub({
       externalUrl: 'http://localhost:3000',
       configPath,
-      datapath: path.join(tmpDir, 'data'),
+      dataPath: path.join(tmpDir, 'data'),
       password: PASSWORD,
       requireResourceBoundTokens: false,
       idleTimeoutMinutes: 0
