@@ -71,20 +71,9 @@ jobs:
       # pin discipline around their base images stays checkable.
       - run: .github/scripts/check-base-image-pin.sh Dockerfile Dockerfile.docker-proxy
 
-  dependency-review:
-    # What a pull request changes in the tree, against the advisory database;
-    # npm audit above sees the tree as it is and cannot tell a bump that
-    # introduced a vulnerable release from one that has always been there.
-    # The only pre-merge catch for an agent-driven dependency bump.
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294 # v5.0.0
-        with:
-          fail-on-severity: high
+  # dependency-review: dropped until the repository's dependency graph is
+  # enabled in Settings -> Code security (part of org baseline #7); audit
+  # above gates known advisories on the tree as it is meanwhile.
 
   codeql:
     # Org security baseline #7: code scanning on every public repository.
