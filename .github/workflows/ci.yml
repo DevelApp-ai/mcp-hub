@@ -1,15 +1,19 @@
 name: CI
 
+# The fork's merge gate: an agent-delivered pull request merges when this
+# workflow is green (org decision #29, squash per #28). Upstream's publishing
+# jobs are deliberately gone — the GHCR push to ghcr.io/ni-c/*, the npm
+# release, the docs site, the registry submission, the nightly e2e report,
+# the weekly audit run — because this fork is installed from a git checkout
+# by Taskhandler and none of those pipelines can authenticate to upstream's
+# registries anyway. The quiet weeks the weekly audit used to cover are owned
+# by Dependabot (org baseline #7): an advisory on an unchanged tree arrives
+# as an update pull request, which runs this workflow.
+
 on:
   push:
     branches: [main]
-    tags: ["v*"]
   pull_request:
-  schedule:
-    # So a dependency advisory published after the last push still reaches
-    # someone. Without it `audit` only ever runs on a change, which is the one
-    # moment a new CVE is least likely to have appeared.
-    - cron: "0 6 * * 1"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -21,53 +25,51 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        node-version: [24, 26]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: ${{ matrix.node-version }}
+          # One LTS major (org Node policy #20 forbids <= 20). The matrix
+          # upstream carries tests the same code twice for a package nobody
+          # publishes from here.
+          node-version: 24
           cache: npm
       - run: npm ci --ignore-scripts
-      # Once, not per matrix entry: the linter parses the source itself and
-      # cannot see a difference between Node versions.
       - run: npm run lint
-        if: matrix.node-version == 24
       - run: npm run build
-      # The end-to-end tree is type-checked here even though the suite itself
-      # runs elsewhere: it costs seconds, and a dependency bump that removes a
-      # type the harness imports (vitest 5 dropped `vitest/reporters`) would
-      # otherwise be found by the nightly, days after the pull request was
-      # green. Once: the check is independent of the Node version.
+      # The e2e and unit trees are type-checked here even though the suites
+      # themselves run elsewhere: vitest transpiles without checking, and a
+      # dependency bump that removes a type would otherwise surface long
+      # after the pull request was green.
       - run: npm run typecheck:e2e
-        if: matrix.node-version == 24
-      # The unit tree was never type-checked at all: vitest transpiles, so a
-      # changed function head in src/ fell over at run time in the test that
-      # called it, and a test that read a field the type does not have was fine
-      # with everybody. Same shape as the e2e check, once per matrix.
       - run: npm run typecheck:test
-        if: matrix.node-version == 24
       - run: npm test
-        if: matrix.node-version != 24
-      - run: npm run test:coverage
-        if: matrix.node-version == 24
-      # The diagram is rendered into four copies from one source; fail if any of
-      # them was edited by hand. Only the PNG's dimensions are checked, not its
-      # bytes — fonts rasterise differently here than on a workstation.
+      # Committed generated output is authoritative and drift-gated (#26):
+      # fail on drift rather than letting a hand edit ship.
       - run: npm run assets:check
-        if: matrix.node-version == 24
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        if: matrix.node-version == 24
-        with:
-          name: coverage
-          path: coverage/
 
-  # What a pull request *changes* in the dependency tree, against the advisory
-  # database — npm audit below sees the tree as it is and cannot tell a bump
-  # that introduced a vulnerable release from one that has always been there.
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: npm
+      # --ignore-scripts: an audit has no business running install hooks.
+      - run: npm ci --ignore-scripts
+      # The whole tree, not --omit=dev: the fork runs from source, so what
+      # builds it is part of what runs.
+      - run: npm audit --audit-level=high
+      # The Dockerfiles stay in the fork for local container builds, so the
+      # pin discipline around their base images stays checkable.
+      - run: .github/scripts/check-base-image-pin.sh Dockerfile Dockerfile.docker-proxy
+
   dependency-review:
+    # What a pull request changes in the tree, against the advisory database;
+    # npm audit above sees the tree as it is and cannot tell a bump that
+    # introduced a vulnerable release from one that has always been there.
+    # The only pre-merge catch for an agent-driven dependency bump.
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     permissions:
@@ -78,294 +80,20 @@ jobs:
         with:
           fail-on-severity: high
 
-  audit:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-      # `--ignore-scripts`: an audit has no business running install hooks.
-      - run: npm ci --ignore-scripts
-      # The whole tree, not `--omit=dev`. This package is published with
-      # provenance, so what builds it is part of what ships.
-      - run: npm audit --audit-level=high
-
-      # The note above the pin claims it is on the active LTS major; this is
-      # what makes that claim checkable. Asserts that both Dockerfiles sit on
-      # the same image, that the major tag is still the LTS tag, and that the
-      # pinned digest really is an image of that major.
-      - run: .github/scripts/check-base-image-pin.sh Dockerfile Dockerfile.docker-proxy
-
   codeql:
+    # Org security baseline #7: code scanning on every public repository.
+    # The guard rather than an unconditional run: the upload needs GitHub
+    # Advanced Security the day this repository is made private, and the
+    # guard states that instead of leaving a job that can never pass.
+    if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
       security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # init and analyze must always move together.
       - uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           languages: javascript-typescript
       - uses: github/codeql-action/analyze@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
-
-  secret-scan:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          version: v0.73.0
-          scan-type: fs
-          scan-ref: .
-          scanners: secret
-          exit-code: "1"
-
-  container-scan:
-    needs: test
-    runs-on: ubuntu-latest
-    # A container CVE used to be visible only as a red job: Trivy fails the build
-    # and uploads nothing, so nothing reaches the Security tab or the API, and a
-    # finding existed only for as long as someone was reading CI logs. The scan
-    # now also reports its results as code scanning alerts — which close
-    # themselves again once a later scan no longer sees them.
-    #
-    # secret-scan deliberately stays a pure gate: publishing the location of a
-    # leaked credential as an alert is the opposite of containing it, and GitHub's
-    # own secret scanning covers that ground.
-    permissions:
-      # A job-level block replaces the workflow default, so contents is repeated.
-      contents: read
-      security-events: write
-    strategy:
-      matrix:
-        include:
-          - platform: linux/amd64
-            tag: amd64
-          - platform: linux/arm64
-            tag: arm64
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      # The apt layers of both Dockerfiles are keyed on this date, so they expire
-      # once a day instead of never. Without it the pinned base digest and the
-      # constant apt command make the layer permanently cacheable, and a Debian
-      # security fix can never enter an image — the state this job reported for
-      # libexpat1 and again for libssh2, each time a real CVE in a published
-      # image rather than a scanner artifact. One step for the whole job so the
-      # image that is scanned and the image that is published agree.
-      - id: epoch
-        run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          load: true
-          platforms: ${{ matrix.platform }}
-          tags: mcp-hub:audit-${{ matrix.tag }}
-          build-args: APT_SECURITY_EPOCH=${{ steps.epoch.outputs.day }}
-          cache-from: type=gha,scope=scan-${{ matrix.tag }}
-          cache-to: type=gha,mode=max,scope=scan-${{ matrix.tag }}
-      # Report first, gate second. The report step never fails, so the SARIF is
-      # uploaded before the gate can turn the job red — no `if: always()` needed,
-      # which would try to upload a file a crashed scan never wrote.
-      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          # The action's default Trivy (v0.65.0) was withdrawn upstream; its
-          # assets 404 and the installer dies. Pin a release that exists.
-          version: v0.73.0
-          image-ref: mcp-hub:audit-${{ matrix.tag }}
-          format: sarif
-          output: trivy-mcp-hub-${{ matrix.tag }}.sarif
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          # Without this the SARIF ignores `severity` and reports every level,
-          # so the Security tab would fill with LOW noise the gate never blocks on.
-          limit-severities-for-sarif: true
-
-      # Skipped while the repository is private — code scanning needs GitHub
-      # Advanced Security, which the Free plan does not include, and the upload
-      # would fail with "Resource not accessible by integration". Same gate as the
-      # codeql job. Fork pull requests are excluded for a different reason: their
-      # token is read-only whatever this permissions block says.
-      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
-        # Every continuation line sits at the same indentation on purpose: a folded
-        # scalar keeps the newline of a *more* indented line, and the expression
-        # parser then rejects the workflow without naming a line.
-        if: >-
-          ${{ !github.event.repository.private &&
-          (github.event_name != 'pull_request' ||
-          github.event.pull_request.head.repo.full_name == github.repository) }}
-        with:
-          sarif_file: trivy-mcp-hub-${{ matrix.tag }}.sarif
-          # One category per image and per matrix leg — four in this repository.
-          # Two uploads sharing a category replace each other, and one image or
-          # one architecture would vanish silently.
-          category: trivy-mcp-hub-${{ matrix.tag }}
-
-      # The gate, unchanged in behaviour. It runs a second time rather than adding
-      # exit-code to the step above, because SARIF is not readable output: a red
-      # job would otherwise name no CVE in its log at all. Trivy and its database
-      # are already on disk here, so this costs seconds.
-      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          version: v0.73.0
-          image-ref: mcp-hub:audit-${{ matrix.tag }}
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
-          skip-setup-trivy: true
-      # The docker proxy is built and scanned in this same job rather than as
-      # another matrix dimension: the matrix decides the job names, and those
-      # names are the required status checks on main. Splitting them would
-      # leave every pull request waiting for a check that no longer exists.
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          file: Dockerfile.docker-proxy
-          load: true
-          platforms: ${{ matrix.platform }}
-          tags: mcp-hub-docker-proxy:audit-${{ matrix.tag }}
-          build-args: APT_SECURITY_EPOCH=${{ steps.epoch.outputs.day }}
-          cache-from: type=gha,scope=scan-proxy-${{ matrix.tag }}
-          cache-to: type=gha,mode=max,scope=scan-proxy-${{ matrix.tag }}
-      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          version: v0.73.0
-          image-ref: mcp-hub-docker-proxy:audit-${{ matrix.tag }}
-          format: sarif
-          output: trivy-mcp-hub-docker-proxy-${{ matrix.tag }}.sarif
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          limit-severities-for-sarif: true
-          skip-setup-trivy: true
-
-      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
-        if: >-
-          ${{ !github.event.repository.private &&
-          (github.event_name != 'pull_request' ||
-          github.event.pull_request.head.repo.full_name == github.repository) }}
-        with:
-          sarif_file: trivy-mcp-hub-docker-proxy-${{ matrix.tag }}.sarif
-          category: trivy-mcp-hub-docker-proxy-${{ matrix.tag }}
-
-      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        with:
-          version: v0.73.0
-          image-ref: mcp-hub-docker-proxy:audit-${{ matrix.tag }}
-          severity: HIGH,CRITICAL
-          ignore-unfixed: true
-          exit-code: "1"
-          skip-setup-trivy: true
-
-  # A release gate, not a pull-request one. `if:` restricts it to tag pushes, so
-  # it never appears on a pull request and the required status checks on main
-  # are untouched — adding a job name is safe, renaming or removing one is not.
-  # `publish` needs it, which is what makes the gate mechanical rather than a
-  # thing somebody remembers to check at eleven at night.
-  #
-  # Only the two cheap tiers: the docker tier builds an image, and `publish` is
-  # about to build the same one two lines further down. It runs nightly and on
-  # any pull request that touches e2e/ or demo/, which is where it earns its
-  # keep.
-  e2e:
-    if: startsWith(github.ref, 'refs/tags/')
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24
-          cache: npm
-      - run: npm ci --ignore-scripts
-      - run: npm run build
-      - run: npm run test:e2e
-        env:
-          MCPHUB_E2E_TIERS: inproc,process
-
-  publish:
-    needs: [test, codeql, secret-scan, container-scan, e2e]
-    # `e2e` only runs on tags, and a *skipped* dependency skips its dependents
-    # by default — which would have quietly stopped every push to main from
-    # publishing `latest`. `!cancelled()` lets a skipped need through; the two
-    # `contains` guards put back the part that matters, which is that nothing
-    # actually failed.
-    if: >-
-      github.event_name == 'push' &&
-      !cancelled() &&
-      !contains(needs.*.result, 'failure') &&
-      !contains(needs.*.result, 'cancelled')
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-      - name: Validate release tag provenance
-        if: startsWith(github.ref, 'refs/tags/')
-        run: |
-          test "$GITHUB_REF_NAME" = "v$(node -p "require('./package.json').version")"
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/main
-      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
-      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
-      # Same daily apt expiry as container-scan, and it has to be repeated here:
-      # this job builds from its own cache scope, so a fresh scan says nothing
-      # about what is pushed unless both are given the same date.
-      - id: epoch
-        run: echo "day=$(date -u +%Y-%m-%d)" >> "$GITHUB_OUTPUT"
-      - uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - id: meta
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        with:
-          images: ghcr.io/ni-c/mcp-hub
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: APT_SECURITY_EPOCH=${{ steps.epoch.outputs.day }}
-          sbom: true
-          provenance: mode=max
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      # Same tags for the proxy: the two images read the same mcp.json with the
-      # same parser, so running mismatched versions is a configuration bug
-      # waiting to happen. Publishing them in lockstep makes that hard to do.
-      - id: meta-proxy
-        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
-        with:
-          images: ghcr.io/ni-c/mcp-hub-docker-proxy
-          tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=sha
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
-        with:
-          context: .
-          file: Dockerfile.docker-proxy
-          push: true
-          platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta-proxy.outputs.tags }}
-          labels: ${{ steps.meta-proxy.outputs.labels }}
-          build-args: APT_SECURITY_EPOCH=${{ steps.epoch.outputs.day }}
-          sbom: true
-          provenance: mode=max
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
